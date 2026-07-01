@@ -1,0 +1,34 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.hexamonitor.backend</string>
+    
+    <key>ProgramArguments</key>
+    <array>
+        <!-- Replace with path to python environment executor -->
+        <string>/usr/local/var/www/hexamonitor/backend/venv/bin/uvicorn</string>
+        <string>app.main:app</string>
+        <string>--host</string>
+        <string>127.0.0.1</string>
+        <string>--port</string>
+        <string>8000</string>
+    </array>
+    
+    <key>WorkingDirectory</key>
+    <string>/usr/local/var/www/hexamonitor/backend</string>
+    
+    <key>RunAtLoad</key>
+    <true/>
+    
+    <key>KeepAlive</key>
+    <true/>
+    
+    <!-- Logging paths -->
+    <key>StandardOutPath</key>
+    <string>/usr/local/var/log/hexamonitor.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/usr/local/var/log/hexamonitor.stderr.log</string>
+</dict>
+</plist>
