@@ -52,6 +52,7 @@ class GpuMetrics(BaseModel):
     vendor: Optional[str] = Field(None, description="GPU vendor")
     core_count: Optional[int] = Field(None, description="Number of GPU cores")
     metal_supported: Optional[bool] = Field(None, description="Metal API support")
+    metal_family: Optional[str] = Field(None, description="Metal family version (e.g. Metal 4)")
     utilization: Optional[float] = Field(
         None,
         description="GPU utilization percent (null on macOS — not reliably available)",
