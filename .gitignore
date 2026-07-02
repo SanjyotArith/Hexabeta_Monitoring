@@ -1,0 +1,38 @@
+# ======================================================
+# HexaAgent .gitignore
+# ======================================================
+
+# --- Python ---
+__pycache__/
+*.py[cod]
+*$py.class
+*.pyo
+
+# --- Virtual Environment ---
+venv/
+.venv/
+env/
+
+# --- Environment Variables ---
+.env
+
+# --- IDE / Editor ---
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# --- Distribution / Build ---
+dist/
+build/
+*.egg-info/
+*.egg
+
+# --- Logs ---
+*.log
+
+# --- OS ---
+Thumbs.db
+Desktop.ini
