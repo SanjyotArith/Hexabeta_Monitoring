@@ -2,7 +2,7 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from app.core.config import settings
-from app.api.v1 import auth, api_checks, agent_ingest, infrastructure
+from app.api.v1 import auth, api_checks, agent_ingest, infrastructure, agents, dashboard
 from app.services.scheduler_service import start_scheduler, shutdown_scheduler
 
 @asynccontextmanager
@@ -43,6 +43,12 @@ app.include_router(agent_ingest.router, prefix=f"{settings.API_V1_STR}/agent/ing
 
 # Include Infrastructure Router
 app.include_router(infrastructure.router, prefix=f"{settings.API_V1_STR}", tags=["Infrastructure"])
+
+# Include Phase 1 Agent Router
+app.include_router(agents.router, prefix=f"{settings.API_V1_STR}/agents", tags=["Agents Phase 1"])
+
+# Include Dashboard Router
+app.include_router(dashboard.router, prefix=f"{settings.API_V1_STR}/dashboard", tags=["Dashboard"])
 
 @app.get("/health")
 async def health():

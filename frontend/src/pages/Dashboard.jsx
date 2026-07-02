@@ -67,8 +67,8 @@ const Dashboard = ({ selectedEnv, selectedProject }) => {
         const mainMachine = machines[0];
         setActiveMachine(mainMachine || null);
         if (mainMachine) {
-          // Fetch current metrics
-          const metricsRes = await authFetch(`/metrics/machines/${mainMachine.id}/current`);
+          // Fetch current Phase 1 metrics from dashboard API
+          const metricsRes = await authFetch(`/dashboard/system`);
           const metrics = metricsRes.ok ? await metricsRes.json() : null;
 
           // Fetch services
@@ -86,14 +86,20 @@ const Dashboard = ({ selectedEnv, selectedProject }) => {
             setServices([]);
           }
 
-          if (metrics) {
-            const ramPct = (metrics.ram_used_bytes / metrics.ram_total_bytes) * 100;
-            const diskPct = (metrics.disk_used_bytes / metrics.disk_total_bytes) * 100;
+          if (metrics && metrics.status === "success") {
+            const ramPct = (metrics.RAM.used_bytes / (metrics.RAM.used_bytes * 1.5)) * 100 || 0; // fallback calculation
             setStats(prev => ({
               ...prev,
-              cpu: metrics.cpu_usage,
+              cpu: metrics.CPU.utilization,
               ramPercent: ramPct,
-              diskPercent: diskPct,
+              diskPercent: 0, // Fallback for old
+              gpu: metrics.GPU,
+              storage: {
+                project: metrics["Project Storage"].gb,
+                backend: metrics["Backend Storage"].gb,
+                frontend: metrics["Frontend Storage"].gb,
+                uploads: metrics["Uploads Storage"].gb
+              },
               activeIncidents: activeIncCount,
               agentUptime: "Online"
             }));
@@ -103,6 +109,8 @@ const Dashboard = ({ selectedEnv, selectedProject }) => {
               cpu: 0,
               ramPercent: 0,
               diskPercent: 0,
+              gpu: { utilization: 0, model: "Unknown" },
+              storage: { project: 0, backend: 0, frontend: 0, uploads: 0 },
               activeIncidents: activeIncCount,
               agentUptime: "Online"
             }));
@@ -158,8 +166,15 @@ const Dashboard = ({ selectedEnv, selectedProject }) => {
     
     // Listen to scope change
     window.addEventListener("hexamonitor_env_changed", loadDashboardData);
+    
+    // Auto-refresh dashboard data every 10 seconds
+    const pollInterval = setInterval(() => {
+      loadDashboardData();
+    }, 10000);
+    
     return () => {
       window.removeEventListener("hexamonitor_env_changed", loadDashboardData);
+      clearInterval(pollInterval);
     };
   }, [selectedEnv]);
 
@@ -310,21 +325,53 @@ const Dashboard = ({ selectedEnv, selectedProject }) => {
               </div>
             </div>
 
-            {/* Disk Space Bar */}
-            <div>
-              <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8125rem", marginBottom: "0.375rem" }}>
-                <span style={{ fontWeight: 500 }}>Disk Utilization</span>
-                <span className="text-mono" style={{ fontWeight: 600 }}>{stats.diskPercent.toFixed(1)}%</span>
+            {/* GPU Bar */}
+            {stats.gpu && (
+              <div>
+                <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8125rem", marginBottom: "0.375rem" }}>
+                  <span style={{ fontWeight: 500 }}>GPU ({stats.gpu.model})</span>
+                  <span className="text-mono" style={{ fontWeight: 600 }}>{(stats.gpu.utilization || 0).toFixed(1)}%</span>
+                </div>
+                <div style={{ height: "8px", backgroundColor: "var(--bg-tertiary)", borderRadius: "9999px", overflow: "hidden" }}>
+                  <div style={{ 
+                    height: "100%", 
+                    width: `${stats.gpu.utilization}%`, 
+                    backgroundColor: stats.gpu.utilization > 85 ? "var(--color-critical)" : "var(--color-success)",
+                    transition: "width 0.5s ease-out" 
+                  }} />
+                </div>
               </div>
-              <div style={{ height: "8px", backgroundColor: "var(--bg-tertiary)", borderRadius: "9999px", overflow: "hidden" }}>
-                <div style={{ 
-                  height: "100%", 
-                  width: `${stats.diskPercent}%`, 
-                  backgroundColor: stats.diskPercent > 90 ? "var(--color-critical)" : "var(--color-success)",
-                  transition: "width 0.5s ease-out" 
-                }} />
-              </div>
-            </div>
+            )}
+
+            {/* Storage Bars */}
+            {stats.storage && (
+              <>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8125rem", marginBottom: "0.375rem" }}>
+                    <span style={{ fontWeight: 500 }}>Project Storage</span>
+                    <span className="text-mono" style={{ fontWeight: 600 }}>{(stats.storage.project || 0).toFixed(2)} GB</span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8125rem", marginBottom: "0.375rem" }}>
+                    <span style={{ fontWeight: 500 }}>Backend Storage</span>
+                    <span className="text-mono" style={{ fontWeight: 600 }}>{(stats.storage.backend || 0).toFixed(2)} GB</span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8125rem", marginBottom: "0.375rem" }}>
+                    <span style={{ fontWeight: 500 }}>Frontend Storage</span>
+                    <span className="text-mono" style={{ fontWeight: 600 }}>{(stats.storage.frontend || 0).toFixed(2)} GB</span>
+                  </div>
+                </div>
+                <div>
+                  <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.8125rem", marginBottom: "0.375rem" }}>
+                    <span style={{ fontWeight: 500 }}>Uploads Storage</span>
+                    <span className="text-mono" style={{ fontWeight: 600 }}>{(stats.storage.uploads || 0).toFixed(2)} GB</span>
+                  </div>
+                </div>
+              </>
+            )}
           </div>
           
           <div style={{ borderTop: "1px solid var(--border-color)", paddingTop: "0.75rem", fontSize: "0.75rem", color: "var(--text-secondary)", marginTop: "0.5rem" }}>

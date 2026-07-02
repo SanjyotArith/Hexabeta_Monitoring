@@ -27,6 +27,7 @@ class Settings:
     # Security Configurations
     # In production, this must be a cryptographically secure 32+ byte string
     SECRET_KEY: str = os.environ.get("HEXAMONITOR_SECRET_KEY", "9e81b67484dfd0f81d86d63e7cf0c79e6bc7c3e59ea16027a052ff37c862901e")
+    AGENT_KEY: str = os.environ.get("AGENT_KEY", "default-agent-key")
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
     REFRESH_TOKEN_EXPIRE_DAYS: int = 7
     

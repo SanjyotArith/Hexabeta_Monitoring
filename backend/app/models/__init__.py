@@ -4,3 +4,4 @@ from app.models.infrastructure import Project, Environment, Machine, Agent, Serv
 from app.models.telemetry import Heartbeat, MachineMetric, ServiceStatusHistory, ApiCheck, ApiCheckHistory, Log, Settings
 from app.models.alerting import AlertRule, Incident, Alert
 from app.models.scheduler import SchedulerJob, SchedulerRun
+from app.models.phase1 import AgentMetricReport, StorageMetric, GPUMetric

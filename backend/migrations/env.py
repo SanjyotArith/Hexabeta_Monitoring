@@ -25,8 +25,8 @@ if config.config_file_name is not None:
 # Set the metadata target for autogenerate
 target_metadata = Base.metadata
 
-# Set database connection URL dynamically from settings
-config.set_main_option("sqlalchemy.url", settings.DATABASE_URL)
+# Set database connection URL dynamically from settings (escape % for configparser)
+config.set_main_option("sqlalchemy.url", settings.DATABASE_URL.replace("%", "%%"))
 
 
 def include_object(obj, name, type_, reflected, compare_to):
