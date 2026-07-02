@@ -22,6 +22,7 @@ from app.collectors.memory import MemoryCollector
 from app.collectors.storage import StorageCollector
 from app.core.config import get_settings
 from app.core.registry import collector_registry
+from app.reporter import reporter
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -56,9 +57,15 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
         ", ".join(collector_registry.registered),
     )
 
+    # Start the Reporter background task
+    reporter.start()
+
     yield  # Application runs
 
     logger.info("HexaAgent shutting down")
+    
+    # Gracefully shutdown Reporter
+    await reporter.stop()
 
 
 # ---------------------------------------------------------------------------
