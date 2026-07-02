@@ -51,6 +51,28 @@ class Settings(BaseSettings):
     def uploads_path(self) -> Path:
         return Path(self.HEXABETA_UPLOADS_PATH)
 
+    # --- Reporter Settings ---
+    MONITOR_URL: str = "https://hexamonitor.spicykheer.com"
+    API_PREFIX: str = "/api/v1"
+    REPORT_ENDPOINT: str = "/agents/report"
+    AGENT_KEY: str = ""
+    MACHINE_NAME: str = "MacHexa-Prod-01"
+    PROJECT_NAME: str = "HexaBeta"
+    ENVIRONMENT: str = "production"
+    COLLECTION_INTERVAL: int = 60
+    REQUEST_TIMEOUT: float = 10.0
+    VERIFY_SSL: bool = True
+    LOG_LEVEL: str = "INFO"
+    DEBUG: bool = False
+
+    @property
+    def full_report_url(self) -> str:
+        """Construct the full URL for the HexaMonitor report endpoint."""
+        base = self.MONITOR_URL.rstrip("/")
+        prefix = self.API_PREFIX.strip("/")
+        endpoint = self.REPORT_ENDPOINT.lstrip("/")
+        return f"{base}/{prefix}/{endpoint}"
+
 
 @lru_cache
 def get_settings() -> Settings:
