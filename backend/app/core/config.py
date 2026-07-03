@@ -110,6 +110,28 @@ class Settings(BaseSettings):
     def git_project_path_resolved(self) -> Path:
         return Path(self.GIT_PROJECT_PATH) if self.GIT_PROJECT_PATH else self.project_root
 
+    # --- Phase 2B: Security Settings ---
+    OPERATION_TOKEN: str = "HB_ops_super_secret_token_12345!"
+
+    # --- Phase 2B: Log File Paths ---
+    BACKEND_LOG_PATH: str = "/Users/hexabeta/projects/arithwise-HBv1/backend/logs/app.log"
+    BACKEND_ERROR_LOG_PATH: str = "/Users/hexabeta/projects/arithwise-HBv1/backend/logs/error.log"
+    NGINX_LOG_PATH: str = "/opt/homebrew/var/log/nginx/access.log"
+    REDIS_LOG_PATH: str = "/opt/homebrew/var/log/redis.log"
+    POSTGRES_LOG_PATH: str = "/opt/homebrew/var/log/postgres.log"
+    CLOUDFLARED_LOG_PATH: str = "/Users/hexabeta/.cloudflared/mac-mini.log"
+    DEPLOYMENT_LOG_PATH: str = "/Users/hexabeta/hb-deploy.log"
+
+    # --- Phase 2B: Alert Thresholds ---
+    ALERT_CPU_THRESHOLD: float = 80.0
+    ALERT_MEMORY_THRESHOLD: float = 90.0
+    ALERT_DISK_THRESHOLD: float = 85.0
+    ALERT_GPU_THRESHOLD: float = 85.0
+
+    # --- Phase 2B: History Engine ---
+    HISTORY_SAVE_INTERVAL: int = 300
+
+
 
 @lru_cache
 def get_settings() -> Settings:
