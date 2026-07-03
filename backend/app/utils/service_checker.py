@@ -1,0 +1,147 @@
+"""
+HexaAgent — macOS Service Checker.
+
+Shared utilities for checking the status of macOS services
+via launchctl and brew services. Used by multiple providers.
+"""
+
+from __future__ import annotations
+
+import asyncio
+import json
+import logging
+from typing import Any, Optional
+
+import psutil
+
+logger = logging.getLogger("hexa_agent.utils.service_checker")
+
+
+async def check_launchctl_service(label: str) -> dict[str, Any]:
+    """
+    Check if a launchd service is loaded and get its PID.
+
+    Parameters
+    ----------
+    label : str
+        The launchd label (e.g. 'com.hexa.backend').
+
+    Returns
+    -------
+    dict
+        ``{"running": bool, "pid": int | None}``
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "launchctl", "list", label,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=5)
+    except (FileNotFoundError, asyncio.TimeoutError):
+        return {"running": False, "pid": None}
+
+    if process.returncode != 0:
+        return {"running": False, "pid": None}
+
+    # Parse output: launchctl list <label> outputs key-value pairs
+    output = stdout.decode()
+    pid: Optional[int] = None
+    for line in output.splitlines():
+        line = line.strip()
+        if line.startswith('"PID"') or line.startswith("PID"):
+            parts = line.split("=")
+            if len(parts) == 2:
+                try:
+                    pid = int(parts[1].strip().rstrip(";"))
+                except ValueError:
+                    pass
+
+    return {"running": True, "pid": pid}
+
+
+async def check_brew_service(service_name: str) -> dict[str, Any]:
+    """
+    Check a Homebrew service status via ``brew services info --json``.
+
+    Parameters
+    ----------
+    service_name : str
+        The brew service name (e.g. 'postgresql@17', 'redis').
+
+    Returns
+    -------
+    dict
+        ``{"running": bool, "pid": int | None, "status": str}``
+    """
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "brew", "services", "info", service_name, "--json",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        stdout, _ = await asyncio.wait_for(process.communicate(), timeout=10)
+    except (FileNotFoundError, asyncio.TimeoutError):
+        return {"running": False, "pid": None, "status": "unknown"}
+
+    if process.returncode != 0:
+        return {"running": False, "pid": None, "status": "unknown"}
+
+    try:
+        data = json.loads(stdout.decode())
+    except json.JSONDecodeError:
+        return {"running": False, "pid": None, "status": "unknown"}
+
+    # brew services info returns a list
+    if isinstance(data, list) and data:
+        svc = data[0]
+    elif isinstance(data, dict):
+        svc = data
+    else:
+        return {"running": False, "pid": None, "status": "unknown"}
+
+    running = svc.get("running", False)
+    pid = svc.get("pid")
+    status = svc.get("status", "unknown")
+
+    return {"running": bool(running), "pid": pid, "status": status}
+
+
+def get_process_metrics(pid: int) -> dict[str, Any]:
+    """
+    Get CPU and memory metrics for a process by PID.
+
+    Returns
+    -------
+    dict
+        ``{"cpu_percent": float, "memory_bytes": int, "memory_mb": float}``
+        or zeroed values if the process is not found.
+    """
+    try:
+        proc = psutil.Process(pid)
+        cpu = proc.cpu_percent(interval=None)
+        mem = proc.memory_info()
+        return {
+            "cpu_percent": round(cpu, 2),
+            "memory_bytes": mem.rss,
+            "memory_mb": round(mem.rss / (1024 * 1024), 2),
+        }
+    except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+        return {"cpu_percent": 0.0, "memory_bytes": 0, "memory_mb": 0.0}
+
+
+def find_process_by_name(name: str) -> Optional[psutil.Process]:
+    """
+    Find the first process whose name or cmdline contains *name*.
+
+    Returns the ``psutil.Process`` or ``None``.
+    """
+    for proc in psutil.process_iter(["pid", "name", "cmdline"]):
+        try:
+            proc_name = proc.info.get("name", "") or ""
+            cmdline = " ".join(proc.info.get("cmdline") or [])
+            if name in proc_name or name in cmdline:
+                return proc
+        except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
+            continue
+    return None

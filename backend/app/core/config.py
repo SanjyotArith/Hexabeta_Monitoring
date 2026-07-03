@@ -73,6 +73,43 @@ class Settings(BaseSettings):
         endpoint = self.REPORT_ENDPOINT.lstrip("/")
         return f"{base}/{prefix}/{endpoint}"
 
+    # --- Phase 2A: Backend Provider ---
+    BACKEND_INTERNAL_HEALTH_URL: str = "http://localhost:8002/api/health"
+    BACKEND_EXTERNAL_HEALTH_URL: str = "https://hexabeta.com/api/health"
+    BACKEND_LAUNCH_LABEL: str = "com.hexa.backend"
+
+    # --- Phase 2A: PostgreSQL Provider ---
+    POSTGRES_SERVICE: str = "postgresql@17"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DATABASE: str = "loops_db"
+    POSTGRES_USER: str = "hexa_user"
+    POSTGRES_PASSWORD: str = ""
+
+    # --- Phase 2A: Redis Provider ---
+    REDIS_SERVICE: str = "redis"
+    REDIS_PORT: int = 6379
+
+    # --- Phase 2A: Nginx Provider ---
+    NGINX_LABEL: str = "com.hexabeta.nginx"
+    NGINX_HTTP: str = "http://127.0.0.1"
+    NGINX_HTTPS: str = "https://127.0.0.1"
+
+    # --- Phase 2A: Cloudflared Provider ---
+    CLOUDFLARED_TUNNEL: str = "mac-mini"
+
+    # --- Phase 2A: Git Provider ---
+    GIT_PROJECT_PATH: str = ""
+
+    # --- Phase 2A: Deploy (read-only reference) ---
+    DEPLOY_SCRIPT: str = ""
+
+    # --- Phase 2A: Snapshot Engine ---
+    SNAPSHOT_INTERVAL: int = 5
+
+    @property
+    def git_project_path_resolved(self) -> Path:
+        return Path(self.GIT_PROJECT_PATH) if self.GIT_PROJECT_PATH else self.project_root
+
 
 @lru_cache
 def get_settings() -> Settings:
