@@ -104,15 +104,25 @@ async def _check_config() -> bool | None:
     This is a READ-ONLY check — it does not modify anything.
     Returns True if valid, False if invalid, None if unable to run.
     """
-    try:
-        process = await asyncio.create_subprocess_exec(
-            "nginx", "-t",
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-        )
-        _, stderr = await asyncio.wait_for(process.communicate(), timeout=5)
-        # nginx -t outputs "syntax is ok" and "test is successful" to stderr
-        output = stderr.decode().lower()
-        return "successful" in output or "syntax is ok" in output
-    except (FileNotFoundError, asyncio.TimeoutError):
-        return None
+    # Try without sudo first, then with sudo -n (passwordless)
+    for cmd in [("nginx", "-t"), ("sudo", "-n", "nginx", "-t")]:
+        try:
+            process = await asyncio.create_subprocess_exec(
+                *cmd,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+            )
+            _, stderr_out = await asyncio.wait_for(
+                process.communicate(), timeout=5
+            )
+            output = stderr_out.decode().lower()
+            if "successful" in output or "syntax is ok" in output:
+                return True
+            if "permission denied" in output or "not permitted" in output:
+                continue  # Try with sudo
+            # If we got a definitive response, return it
+            if process.returncode == 0:
+                return True
+        except (FileNotFoundError, asyncio.TimeoutError):
+            continue
+    return None
