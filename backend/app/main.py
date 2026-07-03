@@ -8,13 +8,10 @@ and Phase 2A providers, configures middleware, logging, and lifespan events.
 from __future__ import annotations
 
 import logging
-import sys
-from contextlib import asynccontextmanager
-from typing import AsyncIterator
-
-from fastapi import FastAPI
-from fastapi.middleware.cors import CORSMiddleware
-
+from app.api.v1.alerts import router as alerts_router
+from app.api.v1.history import router as history_router
+from app.api.v1.logs import router as logs_router
+from app.api.v1.operations import router as operations_router
 from app.api.v1.snapshot import router as snapshot_router
 from app.api.v1.system import router as system_router
 from app.collectors.cpu import CpuCollector
@@ -22,6 +19,8 @@ from app.collectors.gpu import GpuCollector
 from app.collectors.memory import MemoryCollector
 from app.collectors.storage import StorageCollector
 from app.core.config import get_settings
+from app.core.history import history_engine
+from app.core.operations import queue_manager
 from app.core.registry import collector_registry
 from app.core.snapshot import snapshot_manager
 from app.providers.availability import AvailabilityProvider
@@ -33,6 +32,13 @@ from app.providers.postgres import PostgresProvider
 from app.providers.redis_provider import RedisProvider
 from app.providers.system_provider import SystemProvider
 from app.reporter import reporter
+
+import sys
+from contextlib import asynccontextmanager
+from typing import AsyncIterator
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
+
 
 # ---------------------------------------------------------------------------
 # Logging
@@ -80,6 +86,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ---- Start background services ----
     snapshot_manager.start()
     reporter.start()
+    queue_manager.start_worker()
+    history_engine.start()
 
     yield  # Application runs
 
@@ -88,6 +96,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     # ---- Graceful shutdown ----
     await snapshot_manager.stop()
     await reporter.stop()
+    await queue_manager.stop_worker()
+    await history_engine.stop()
+
 
 
 # ---------------------------------------------------------------------------
@@ -109,10 +120,15 @@ app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],  # Tighten in production once HexaMonitor origin is known
     allow_credentials=True,
-    allow_methods=["GET"],
+    allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
 
 # Mount API routers
 app.include_router(system_router, prefix="/api/v1")     # Phase 1 (unchanged)
 app.include_router(snapshot_router, prefix="/api/v1")    # Phase 2A (new)
+app.include_router(operations_router, prefix="/api/v1")  # Phase 2B (new)
+app.include_router(logs_router, prefix="/api/v1")        # Phase 2B (new)
+app.include_router(alerts_router, prefix="/api/v1")      # Phase 2B (new)
+app.include_router(history_router, prefix="/api/v1")     # Phase 2B (new)
+

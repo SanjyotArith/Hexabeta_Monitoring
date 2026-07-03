@@ -72,6 +72,11 @@ class SnapshotManager:
                 "deployment": {},
                 "availability": {},
                 "system": {},
+                "alerts": [],
+                "maintenance": False,
+                "operation_queue": {"active": None, "pending": [], "pending_count": 0},
+                "latest_audit_record": None,
+                "history_summary": {"recorded_snapshots": 0},
             }
         return self._snapshot
 
@@ -94,6 +99,11 @@ class SnapshotManager:
             "deployment": {},
             "availability": {},
             "system": {},
+            "alerts": [],
+            "maintenance": False,
+            "operation_queue": {},
+            "latest_audit_record": None,
+            "history_summary": {},
         }
 
         for collector_name, data in raw.items():
@@ -111,11 +121,36 @@ class SnapshotManager:
             else:
                 snapshot[section][key] = data
 
+        # ---- Phase 2B Extensions ----
+        try:
+            from app.core.alerts import evaluate_alerts
+            from app.core.history import history_engine
+            from app.core.maintenance import maintenance_manager
+            from app.core.operations import audit_logger, queue_manager
+
+            # Evaluated Alerts
+            snapshot["alerts"] = evaluate_alerts(snapshot)
+            
+            # Maintenance Mode Status
+            snapshot["maintenance"] = maintenance_manager.is_enabled
+            
+            # Operation Queue status
+            snapshot["operation_queue"] = queue_manager.get_queue_status()
+            
+            # Latest Audit Record
+            snapshot["latest_audit_record"] = audit_logger.get_latest_record()
+            
+            # History summary
+            snapshot["history_summary"] = history_engine.get_history_summary()
+        except Exception as e:
+            logger.error("Failed to append Phase 2B extensions to snapshot: %s", e)
+
         elapsed = (time.monotonic() - start) * 1000
         self._last_refresh_ms = elapsed
         self._snapshot = snapshot
 
         logger.debug("Snapshot refreshed in %.1fms", elapsed)
+
 
     async def _loop(self) -> None:
         """Background loop — refreshes snapshot every SNAPSHOT_INTERVAL seconds."""
