@@ -143,8 +143,8 @@ class Settings(BaseSettings):
     OPERATION_TOKEN: str = "HB_ops_super_secret_token_12345!"
 
     # --- Phase 2B: Log File Paths ---
-    BACKEND_LOG_PATH: str = "/Users/hexabeta/projects/arithwise-HBv1/backend/logs/app.log"
-    BACKEND_ERROR_LOG_PATH: str = "/Users/hexabeta/projects/arithwise-HBv1/backend/logs/error.log"
+    BACKEND_LOG_PATH: str = "/Users/hexabeta/backend.log"
+    BACKEND_ERROR_LOG_PATH: str = "/Users/hexabeta/backend-error.log"
     NGINX_LOG_PATH: str = "/opt/homebrew/var/log/nginx/access.log"
     REDIS_LOG_PATH: str = "/opt/homebrew/var/log/redis.log"
     POSTGRES_LOG_PATH: str = "/opt/homebrew/var/log/postgres.log"
