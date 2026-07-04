@@ -172,40 +172,40 @@ def update_cloudflared_launchagent() -> None:
         logger.error("Failed to ensure cloudflared log file exists: %s", e)
 
     plist_paths = [
+        Path("/Users/hexabeta/Library/LaunchAgents/homebrew.mxcl.cloudflared.plist"),
+        Path("/Users/hexabeta/Library/LaunchAgents/com.oring.cloudflared.plist"),
+        Path("/Library/LaunchDaemons/com.cloudflare.cloudflared.plist"),
         Path("/Users/hexabeta/Library/LaunchAgents/com.cloudflare.tunnel.plist"),
         Path("/Library/LaunchAgents/com.cloudflare.tunnel.plist"),
     ]
 
-    plist_path = None
-    for p in plist_paths:
-        if p.exists():
-            plist_path = p
-            break
+    updated_any = False
+    for plist_path in plist_paths:
+        if plist_path.exists():
+            try:
+                # Check permissions - if not writable, skip
+                if not os.access(plist_path, os.W_OK):
+                    logger.warning("Cloudflared plist %s is not writable. Skipping update.", plist_path)
+                    continue
 
-    if not plist_path:
-        logger.info("Cloudflared LaunchAgent plist not found. Skipping auto-redirection update.")
-        return
+                with open(plist_path, "rb") as fp:
+                    pl = plistlib.load(fp)
 
-    try:
-        # Check permissions - if not writable, skip
-        if not os.access(plist_path, os.W_OK):
-            logger.warning("Cloudflared plist %s is not writable. Skipping update.", plist_path)
-            return
+                updated = False
+                if pl.get("StandardOutPath") != target_log:
+                    pl["StandardOutPath"] = target_log
+                    updated = True
+                if pl.get("StandardErrorPath") != target_log:
+                    pl["StandardErrorPath"] = target_log
+                    updated = True
 
-        with open(plist_path, "rb") as fp:
-            pl = plistlib.load(fp)
+                if updated:
+                    with open(plist_path, "wb") as fp:
+                        plistlib.dump(pl, fp)
+                    logger.info("Successfully updated Cloudflared plist %s StandardOutPath/StandardErrorPath to %s", plist_path, target_log)
+                    updated_any = True
+            except Exception as e:
+                logger.error("Failed to update Cloudflared LaunchAgent plist %s: %s", plist_path, e)
 
-        updated = False
-        if pl.get("StandardOutPath") != target_log:
-            pl["StandardOutPath"] = target_log
-            updated = True
-        if pl.get("StandardErrorPath") != target_log:
-            pl["StandardErrorPath"] = target_log
-            updated = True
-
-        if updated:
-            with open(plist_path, "wb") as fp:
-                plistlib.dump(pl, fp)
-            logger.info("Successfully updated Cloudflared plist StandardOutPath/StandardErrorPath to %s", target_log)
-    except Exception as e:
-        logger.error("Failed to update Cloudflared LaunchAgent plist: %s", e)
+    if not updated_any:
+        logger.info("No Cloudflared LaunchAgent plists were modified.")

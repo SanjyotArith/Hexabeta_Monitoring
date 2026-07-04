@@ -366,9 +366,18 @@ class OperationQueueManager:
         if not Path(nginx_plist).exists():
             nginx_plist = f"/Users/hexabeta/Library/LaunchDaemons/{settings.NGINX_LABEL}.plist"
 
-        cloudflared_plist = f"/Users/hexabeta/Library/LaunchAgents/com.cloudflare.tunnel.plist"
-        if not Path(cloudflared_plist).exists():
-            cloudflared_plist = f"/Library/LaunchAgents/com.cloudflare.tunnel.plist"
+        cloudflared_plists = [
+            "/Users/hexabeta/Library/LaunchAgents/homebrew.mxcl.cloudflared.plist",
+            "/Users/hexabeta/Library/LaunchAgents/com.oring.cloudflared.plist",
+            "/Library/LaunchDaemons/com.cloudflare.cloudflared.plist",
+            "/Users/hexabeta/Library/LaunchAgents/com.cloudflare.tunnel.plist",
+            "/Library/LaunchAgents/com.cloudflare.tunnel.plist",
+        ]
+        cloudflared_plist = cloudflared_plists[0]
+        for p in cloudflared_plists:
+            if Path(p).exists():
+                cloudflared_plist = p
+                break
 
         cmd_format = {
             "backend_plist": backend_plist,
