@@ -150,11 +150,26 @@ def find_process_by_name(name: str) -> Optional[psutil.Process]:
 def update_cloudflared_launchagent() -> None:
     """
     Updates the Cloudflared LaunchAgent plist to redirect StandardOutPath
-    and StandardErrorPath to a persistent log file.
+    and StandardErrorPath to a persistent log file, and ensures the log file exists.
     """
     import os
     import plistlib
     from pathlib import Path
+
+    target_log = "/Users/hexabeta/.cloudflared/cloudflared.log"
+    try:
+        log_path = Path(target_log)
+        # Ensure parent directory exists
+        log_path.parent.mkdir(parents=True, exist_ok=True)
+        if not log_path.exists():
+            log_path.touch(exist_ok=True)
+            try:
+                log_path.chmod(0o666)
+            except Exception:
+                pass
+            logger.info("Created cloudflared log file at %s", target_log)
+    except Exception as e:
+        logger.error("Failed to ensure cloudflared log file exists: %s", e)
 
     plist_paths = [
         Path("/Users/hexabeta/Library/LaunchAgents/com.cloudflare.tunnel.plist"),
@@ -179,10 +194,6 @@ def update_cloudflared_launchagent() -> None:
 
         with open(plist_path, "rb") as fp:
             pl = plistlib.load(fp)
-
-        target_log = "/Users/hexabeta/.cloudflared/cloudflared.log"
-        # Ensure directory exists for the log
-        Path(target_log).parent.mkdir(parents=True, exist_ok=True)
 
         updated = False
         if pl.get("StandardOutPath") != target_log:
