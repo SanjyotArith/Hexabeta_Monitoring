@@ -55,6 +55,7 @@ class Settings(BaseSettings):
     MONITOR_URL: str = "https://hexamonitor.spicykheer.com"
     API_PREFIX: str = "/api/v1"
     REPORT_ENDPOINT: str = "/agents/report"
+    SNAPSHOT_PUSH_ENDPOINT: str = "/snapshot/push"
     AGENT_KEY: str = ""
     MACHINE_NAME: str = "MacHexa-Prod-01"
     PROJECT_NAME: str = "HexaBeta"
@@ -71,6 +72,14 @@ class Settings(BaseSettings):
         base = self.MONITOR_URL.rstrip("/")
         prefix = self.API_PREFIX.strip("/")
         endpoint = self.REPORT_ENDPOINT.lstrip("/")
+        return f"{base}/{prefix}/{endpoint}"
+
+    @property
+    def full_snapshot_push_url(self) -> str:
+        """Construct the full URL for the HexaMonitor snapshot push endpoint."""
+        base = self.MONITOR_URL.rstrip("/")
+        prefix = self.API_PREFIX.strip("/")
+        endpoint = self.SNAPSHOT_PUSH_ENDPOINT.lstrip("/")
         return f"{base}/{prefix}/{endpoint}"
 
     # --- Phase 2A: Backend Provider ---

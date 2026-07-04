@@ -23,6 +23,7 @@ from app.core.history import history_engine
 from app.core.operations import queue_manager
 from app.core.registry import collector_registry
 from app.core.snapshot import snapshot_manager
+from app.core.snapshot_pusher import snapshot_pusher
 from app.providers.availability import AvailabilityProvider
 from app.providers.backend import BackendProvider
 from app.providers.cloudflared import CloudflaredProvider
@@ -85,6 +86,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ---- Start background services ----
     snapshot_manager.start()
+    snapshot_pusher.start()
     reporter.start()
     queue_manager.start_worker()
     history_engine.start()
@@ -95,6 +97,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
 
     # ---- Graceful shutdown ----
     await snapshot_manager.stop()
+    await snapshot_pusher.stop()
     await reporter.stop()
     await queue_manager.stop_worker()
     await history_engine.stop()
