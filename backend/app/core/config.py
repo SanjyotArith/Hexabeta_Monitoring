@@ -56,6 +56,10 @@ class Settings(BaseSettings):
     API_PREFIX: str = "/api/v1"
     REPORT_ENDPOINT: str = "/agents/report"
     SNAPSHOT_PUSH_ENDPOINT: str = "/snapshot/push"
+    LOGS_PUSH_ENDPOINT: str = "/logs/push"
+    LOGS_PUSH_INTERVAL: int = 5
+    OPERATIONS_POLL_ENDPOINT: str = "/operations/pending"
+    OPERATIONS_POLL_INTERVAL: int = 5
     AGENT_KEY: str = ""
     MACHINE_NAME: str = "MacHexa-Prod-01"
     PROJECT_NAME: str = "HexaBeta"
@@ -80,6 +84,22 @@ class Settings(BaseSettings):
         base = self.MONITOR_URL.rstrip("/")
         prefix = self.API_PREFIX.strip("/")
         endpoint = self.SNAPSHOT_PUSH_ENDPOINT.lstrip("/")
+        return f"{base}/{prefix}/{endpoint}"
+
+    @property
+    def full_logs_push_url(self) -> str:
+        """Construct the full URL for the HexaMonitor logs push endpoint."""
+        base = self.MONITOR_URL.rstrip("/")
+        prefix = self.API_PREFIX.strip("/")
+        endpoint = self.LOGS_PUSH_ENDPOINT.lstrip("/")
+        return f"{base}/{prefix}/{endpoint}"
+
+    @property
+    def full_operations_poll_url(self) -> str:
+        """Construct the full URL for the HexaMonitor operations poll endpoint."""
+        base = self.MONITOR_URL.rstrip("/")
+        prefix = self.API_PREFIX.strip("/")
+        endpoint = self.OPERATIONS_POLL_ENDPOINT.lstrip("/")
         return f"{base}/{prefix}/{endpoint}"
 
     # --- Phase 2A: Backend Provider ---

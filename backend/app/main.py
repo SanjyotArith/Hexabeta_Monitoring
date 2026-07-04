@@ -24,6 +24,8 @@ from app.core.operations import queue_manager
 from app.core.registry import collector_registry
 from app.core.snapshot import snapshot_manager
 from app.core.snapshot_pusher import snapshot_pusher
+from app.core.operations_poller import operations_poller
+from app.core.log_pusher import log_pusher
 from app.providers.availability import AvailabilityProvider
 from app.providers.backend import BackendProvider
 from app.providers.cloudflared import CloudflaredProvider
@@ -90,6 +92,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reporter.start()
     queue_manager.start_worker()
     history_engine.start()
+    operations_poller.start()
+    log_pusher.start()
 
     yield  # Application runs
 
@@ -101,6 +105,8 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await reporter.stop()
     await queue_manager.stop_worker()
     await history_engine.stop()
+    await operations_poller.stop()
+    await log_pusher.stop()
 
 
 
