@@ -24,6 +24,7 @@ def get_log_path(service: str) -> Optional[Path]:
         "backend": settings.BACKEND_LOG_PATH,
         "backend_error": settings.BACKEND_ERROR_LOG_PATH,
         "nginx": settings.NGINX_LOG_PATH,
+        "nginx_error": settings.NGINX_ERROR_LOG_PATH,
         "redis": settings.REDIS_LOG_PATH,
         "postgres": settings.POSTGRES_LOG_PATH,
         "cloudflared": settings.CLOUDFLARED_LOG_PATH,
@@ -31,7 +32,24 @@ def get_log_path(service: str) -> Optional[Path]:
     }
     
     path_str = mapping.get(service)
-    return Path(path_str) if path_str else None
+    if not path_str:
+        return None
+        
+    path = Path(path_str)
+    try:
+        if path.exists() and path.is_dir():
+            # Automatically find the most recently modified .log file in the directory
+            log_files = list(path.glob("*.log"))
+            if not log_files:
+                logger.warning("No log files found in directory: %s", path)
+                return None
+            log_files.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+            return log_files[0]
+    except Exception as e:
+        logger.error("Failed to check directory path for service '%s': %s", service, e)
+        return None
+
+    return path
 
 
 def read_logs_tail(

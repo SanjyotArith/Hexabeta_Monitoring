@@ -87,6 +87,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     )
 
     # ---- Start background services ----
+    try:
+        from app.utils.service_checker import update_cloudflared_launchagent
+        update_cloudflared_launchagent()
+    except Exception as e:
+        logger.error("Failed to execute update_cloudflared_launchagent on startup: %s", e)
+
     snapshot_manager.start()
     snapshot_pusher.start()
     reporter.start()

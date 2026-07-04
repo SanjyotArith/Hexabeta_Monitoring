@@ -146,9 +146,10 @@ class Settings(BaseSettings):
     BACKEND_LOG_PATH: str = "/Users/hexabeta/backend.log"
     BACKEND_ERROR_LOG_PATH: str = "/Users/hexabeta/backend-error.log"
     NGINX_LOG_PATH: str = "/opt/homebrew/var/log/nginx/access.log"
+    NGINX_ERROR_LOG_PATH: str = "/opt/homebrew/var/log/nginx/error.log"
     REDIS_LOG_PATH: str = "/opt/homebrew/var/log/redis.log"
-    POSTGRES_LOG_PATH: str = "/opt/homebrew/var/log/postgres.log"
-    CLOUDFLARED_LOG_PATH: str = "/Users/hexabeta/.cloudflared/mac-mini.log"
+    POSTGRES_LOG_PATH: str = "/opt/homebrew/var/postgresql@17/log/"
+    CLOUDFLARED_LOG_PATH: str = "/Users/hexabeta/.cloudflared/cloudflared.log"
     DEPLOYMENT_LOG_PATH: str = "/Users/hexabeta/hb-deploy.log"
 
     # --- Phase 2B: Alert Thresholds ---

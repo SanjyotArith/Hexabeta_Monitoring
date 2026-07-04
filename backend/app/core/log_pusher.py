@@ -33,6 +33,7 @@ class LogPusher:
             "backend",
             "backend_error",
             "nginx",
+            "nginx_error",
             "redis",
             "postgres",
             "cloudflared",

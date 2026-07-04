@@ -145,3 +145,56 @@ def find_process_by_name(name: str) -> Optional[psutil.Process]:
         except (psutil.NoSuchProcess, psutil.AccessDenied, psutil.ZombieProcess):
             continue
     return None
+
+
+def update_cloudflared_launchagent() -> None:
+    """
+    Updates the Cloudflared LaunchAgent plist to redirect StandardOutPath
+    and StandardErrorPath to a persistent log file.
+    """
+    import os
+    import plistlib
+    from pathlib import Path
+
+    plist_paths = [
+        Path("/Users/hexabeta/Library/LaunchAgents/com.cloudflare.tunnel.plist"),
+        Path("/Library/LaunchAgents/com.cloudflare.tunnel.plist"),
+    ]
+
+    plist_path = None
+    for p in plist_paths:
+        if p.exists():
+            plist_path = p
+            break
+
+    if not plist_path:
+        logger.info("Cloudflared LaunchAgent plist not found. Skipping auto-redirection update.")
+        return
+
+    try:
+        # Check permissions - if not writable, skip
+        if not os.access(plist_path, os.W_OK):
+            logger.warning("Cloudflared plist %s is not writable. Skipping update.", plist_path)
+            return
+
+        with open(plist_path, "rb") as fp:
+            pl = plistlib.load(fp)
+
+        target_log = "/Users/hexabeta/.cloudflared/cloudflared.log"
+        # Ensure directory exists for the log
+        Path(target_log).parent.mkdir(parents=True, exist_ok=True)
+
+        updated = False
+        if pl.get("StandardOutPath") != target_log:
+            pl["StandardOutPath"] = target_log
+            updated = True
+        if pl.get("StandardErrorPath") != target_log:
+            pl["StandardErrorPath"] = target_log
+            updated = True
+
+        if updated:
+            with open(plist_path, "wb") as fp:
+                plistlib.dump(pl, fp)
+            logger.info("Successfully updated Cloudflared plist StandardOutPath/StandardErrorPath to %s", target_log)
+    except Exception as e:
+        logger.error("Failed to update Cloudflared LaunchAgent plist: %s", e)
