@@ -163,6 +163,8 @@ class ValidationEngine:
 
         Returns (is_valid, list_of_errors).
         """
+        service = service.strip().lower()
+        operation = operation.strip().lower()
         settings = get_settings()
         errors: list[str] = []
 
@@ -260,6 +262,8 @@ class OperationQueueManager:
 
         Returns the initial operation metadata.
         """
+        service = service.strip().lower()
+        operation = operation.strip().lower()
         op_id = str(uuid.uuid4())
         op = {
             "id": op_id,
@@ -335,8 +339,8 @@ class OperationQueueManager:
         op["started_time"] = datetime.now(timezone.utc).isoformat()
         self.audit_logger.log_operation(op)
 
-        service = op["service"]
-        action = op["operation"]
+        service = op["service"].strip().lower()
+        action = op["operation"].strip().lower()
         settings = get_settings()
 
         # Step 1: Pre-execution validation
@@ -346,6 +350,12 @@ class OperationQueueManager:
             op["error"] = f"Validation failed: {'; '.join(errors)}"
             op["completed_time"] = datetime.now(timezone.utc).isoformat()
             self.audit_logger.log_operation(op)
+            logger.error(
+                "Operation validation failed: service=%s operation=%s errors=%s",
+                service,
+                action,
+                "; ".join(errors),
+            )
             return
 
         # Resolve command template
@@ -355,6 +365,11 @@ class OperationQueueManager:
             op["error"] = f"Operation '{action}' not configured for service '{service}'"
             op["completed_time"] = datetime.now(timezone.utc).isoformat()
             self.audit_logger.log_operation(op)
+            logger.error(
+                "Operation registry lookup failed: service=%s operation=%s",
+                service,
+                action,
+            )
             return
 
         # Plist/Script references formatting
@@ -409,6 +424,12 @@ class OperationQueueManager:
 
         # Run process
         t_start = time.monotonic()
+        logger.info(
+            "Executing operation: service=%s operation=%s command=%s",
+            service,
+            action,
+            command,
+        )
         try:
             # We run commands in a subshell since they use plists, sudo, or brew services
             process = await asyncio.create_subprocess_shell(
@@ -428,14 +449,36 @@ class OperationQueueManager:
             
             if process.returncode == 0:
                 op["status"] = "completed"
+                logger.info(
+                    "Operation completed: status=%s exit_code=%s duration=%s",
+                    op["status"],
+                    op["exit_code"],
+                    op["duration"],
+                )
             else:
                 op["status"] = "failed"
                 op["error"] = err_out or f"Shell command returned non-zero exit code: {process.returncode}"
+                logger.error(
+                    "Operation failed: service=%s operation=%s command=%s exit_code=%s stdout=%s stderr=%s",
+                    service,
+                    action,
+                    command,
+                    process.returncode,
+                    output,
+                    err_out,
+                )
                 
         except Exception as e:
             op["status"] = "failed"
             op["error"] = str(e)
             op["duration"] = round(time.monotonic() - t_start, 2)
+            logger.exception(
+                "Operation raised exception: service=%s operation=%s command=%s error=%s",
+                service,
+                action,
+                command,
+                str(e),
+            )
             
         finally:
             # Disable Maintenance Mode automatically after deployment verification/execution finishes
@@ -460,6 +503,9 @@ class ConfirmationManager:
         """Create a new confirmation session and return the token identifier."""
         # Cleanup expired tokens first
         self.cleanup()
+
+        service = service.strip().lower()
+        operation = operation.strip().lower()
 
         token = str(uuid.uuid4())
         phrase = "DEPLOY" if service == "deploy" else "RESTART"
