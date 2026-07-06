@@ -42,15 +42,15 @@ COMMANDS_REGISTRY: dict[str, dict[str, str]] = {
         "restart": "brew services restart {redis_service}",
     },
     "nginx": {
-        "start": "sudo launchctl load -w {nginx_plist}",
-        "stop": "sudo launchctl unload {nginx_plist}",
-        "restart": "sudo launchctl unload {nginx_plist} && sudo launchctl load -w {nginx_plist}",
-    },
+    "start": "sudo launchctl bootstrap system {nginx_plist}",
+    "stop": "sudo launchctl bootout system {nginx_plist}",
+    "restart": "sudo launchctl bootout system {nginx_plist} && sudo launchctl bootstrap system {nginx_plist}",
+},
     "cloudflared": {
-        "start": "launchctl load -w {cloudflared_plist}",
-        "stop": "launchctl unload {cloudflared_plist}",
-        "restart": "launchctl unload {cloudflared_plist} && launchctl load -w {cloudflared_plist}",
-    },
+    "start": "sudo launchctl bootstrap system {cloudflared_plist}",
+    "stop": "sudo launchctl bootout system {cloudflared_plist}",
+    "restart": "sudo launchctl bootout system {cloudflared_plist} && sudo launchctl bootstrap system {cloudflared_plist}",
+},
     "deploy": {
         "dry_run": "{deploy_script} --dry-run",
         "execute": "{deploy_script}",
