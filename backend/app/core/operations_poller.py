@@ -94,6 +94,7 @@ class OperationsPoller:
                         service=service,
                         operation=operation,
                         mode=mode,
+                        op_id=remote_id,
                     )
             else:
                 logger.error(

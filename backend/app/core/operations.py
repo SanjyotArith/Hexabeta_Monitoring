@@ -256,6 +256,7 @@ class OperationQueueManager:
         operation: str,
         mode: str = "production",
         params: Optional[dict[str, Any]] = None,
+        op_id: Optional[str] = None,
     ) -> dict[str, Any]:
         """
         Create and queue a new operation task.
@@ -264,7 +265,7 @@ class OperationQueueManager:
         """
         service = service.strip().lower()
         operation = operation.strip().lower()
-        op_id = str(uuid.uuid4())
+        op_id = op_id or str(uuid.uuid4())
         op = {
             "id": op_id,
             "service": service,
