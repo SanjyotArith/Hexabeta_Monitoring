@@ -66,8 +66,8 @@ class LogPusher:
             else:
                 self._offsets[service] = 0
 
-    async def _push_service_logs(self, service: str, lines: list[str]) -> None:
-        """POST the log lines to HexaMonitor."""
+    async def _push_service_logs(self, service: str, lines: list[str]) -> bool:
+        """POST the log lines to HexaMonitor. Returns True on success, False otherwise."""
         url = self.settings.full_logs_push_url
         await self._init_client()
 
@@ -89,8 +89,10 @@ class LogPusher:
                     response.status_code,
                     response.text,
                 )
+                return False
             else:
                 logger.debug("Successfully pushed logs for service '%s'", service)
+                return True
 
         except httpx.HTTPStatusError as e:
             logger.error(
@@ -99,15 +101,20 @@ class LogPusher:
                 service,
                 e.response.text,
             )
+            return False
         except httpx.TimeoutException as e:
             logger.error("Timeout exception pushing logs for '%s' to HexaMonitor: %s", service, e)
+            return False
         except httpx.ConnectError as e:
             logger.error("Connection error pushing logs for '%s' to HexaMonitor: %s", service, e)
+            return False
         except Exception as e:
             logger.exception("Unexpected exception pushing logs for '%s': %s", service, e)
+            return False
 
     async def _read_and_push_new_lines(self) -> None:
         """Check all service log files for new content and push it."""
+        import datetime
         for service in self.services:
             path = get_log_path(service)
             if not path or not path.exists():
@@ -132,7 +139,6 @@ class LogPusher:
                 with open(path, "rb") as f:
                     f.seek(last_offset)
                     data = f.read(current_size - last_offset)
-                    self._offsets[service] = current_size
 
                     if data:
                         lines_raw = data.split(b"\n")
@@ -146,19 +152,32 @@ class LogPusher:
 
                 # Push if we found any valid new lines
                 if new_lines:
-                    await self._push_service_logs(service, new_lines)
+                    # Print verification debug logs
+                    now_detect = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    print(f"[{now_detect}] New {service} log detected", flush=True)
+
+                    now_queue = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                    log_word = "log" if len(new_lines) == 1 else "logs"
+                    print(f"[{now_queue}] Queued {len(new_lines)} {log_word}", flush=True)
+
+                    # Only update offset if the push to HexaMonitor was successful!
+                    success = await self._push_service_logs(service, new_lines)
+                    if success:
+                        self._offsets[service] = current_size
+                        now_sent = datetime.datetime.now().strftime("%H:%M:%S.%f")[:-3]
+                        print(f"[{now_sent}] Sent {len(new_lines)} {log_word} to HexaMonitor", flush=True)
+                    else:
+                        logger.error("Failed to push logs for service '%s'. Will retry next collection cycle.", service)
 
             except Exception as e:
                 logger.error("Error reading log file for service '%s': %s", service, e)
 
     async def _loop(self) -> None:
-        """Main background loop executing every LOGS_PUSH_INTERVAL seconds."""
+        """Main background loop executing every 1 second."""
         self._initialize_offsets()
-        interval = self.settings.LOGS_PUSH_INTERVAL
         logger.info(
-            "LogPusher started — pushing to %s every %d seconds",
+            "LogPusher started — pushing to %s every 1 second",
             self.settings.full_logs_push_url,
-            interval,
         )
 
         while True:
@@ -171,7 +190,7 @@ class LogPusher:
                 logger.exception("Unexpected error in LogPusher loop: %s", e)
 
             try:
-                await asyncio.sleep(interval)
+                await asyncio.sleep(1.0)
             except asyncio.CancelledError:
                 logger.info("LogPusher loop cancelled during sleep.")
                 break
