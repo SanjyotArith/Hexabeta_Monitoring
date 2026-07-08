@@ -1,5 +1,5 @@
 """
-HexaAgent — API Observability Engine (Phase 3).
+HexaAgent — API Observability Engine (Phase 3.1).
 
 High-performance, worker-safe, thread-safe API monitoring subsystem.
 Tracks requests, latency percentiles, worker processes, dependencies,
@@ -14,6 +14,7 @@ import os
 import re
 import sqlite3
 import time
+import traceback
 import httpx
 from datetime import datetime, timezone, timedelta
 from pathlib import Path
@@ -35,11 +36,41 @@ def get_route_template(request: Any) -> str:
     return path
 
 
+def classify_failure(status_code: int, exc_type: Optional[str], exc_msg: Optional[str]) -> str:
+    msg = (exc_msg or "").lower()
+    t = (exc_type or "").lower()
+    
+    if "asyncpg" in t or "asyncpg" in msg or "psycopg" in t or "psycopg" in msg or "postgres" in msg:
+        return "PostgreSQL"
+    if "redis" in t or "redis" in msg:
+        return "Redis"
+    if "timeout" in t or "timeout" in msg:
+        return "Timeout"
+    if "validation" in t or "validation" in msg or status_code == 422:
+        return "Validation"
+    if status_code == 401 or "auth" in msg or "jwt" in msg or "token" in msg:
+        return "Authentication"
+    if status_code == 403 or "permission" in msg or "forbidden" in msg:
+        return "Permission"
+    if "httpx" in t or "http" in msg or "connection" in msg:
+        return "External HTTP API"
+    return "Internal Exception"
+
+
 class ApiObservabilityEngine:
     def __init__(self) -> None:
-        from app.core.config import get_settings
-        settings = get_settings()
-        self.db_dir = Path(settings.HEXABETA_BACKEND_PATH) / "data"
+        backend_path = None
+        try:
+            from app.core.config import get_settings
+            settings = get_settings()
+            backend_path = getattr(settings, "HEXABETA_BACKEND_PATH", None)
+        except Exception:
+            pass
+
+        if not backend_path:
+            backend_path = Path(__file__).resolve().parent.parent.parent
+            
+        self.db_dir = Path(backend_path) / "data"
         self.db_path = self.db_dir / "api_observability.db"
         self._write_queue: asyncio.Queue = asyncio.Queue()
         self._flush_task: Optional[asyncio.Task] = None
@@ -125,6 +156,45 @@ class ApiObservabilityEngine:
                     )
                     """
                 )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS endpoint_registry (
+                        route TEXT NOT NULL,
+                        method TEXT NOT NULL,
+                        PRIMARY KEY (route, method)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS worker_endpoint_active (
+                        pid INTEGER,
+                        route TEXT NOT NULL,
+                        method TEXT NOT NULL,
+                        active_requests INTEGER DEFAULT 0,
+                        last_seen TEXT NOT NULL,
+                        PRIMARY KEY (pid, route, method)
+                    )
+                    """
+                )
+                conn.execute(
+                    """
+                    CREATE TABLE IF NOT EXISTS failures (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        timestamp TEXT NOT NULL,
+                        route TEXT NOT NULL,
+                        method TEXT NOT NULL,
+                        status_code INTEGER NOT NULL,
+                        exception_type TEXT,
+                        exception_message TEXT,
+                        failure_reason TEXT,
+                        stack_trace TEXT,
+                        request_id TEXT,
+                        duration REAL NOT NULL,
+                        worker_pid INTEGER NOT NULL
+                    )
+                    """
+                )
                 conn.commit()
         except Exception as e:
             logger.exception("Failed to initialize api observability database: %s", e)
@@ -144,9 +214,9 @@ class ApiObservabilityEngine:
     async def _flush_loop(self) -> None:
         while True:
             try:
-                await asyncio.sleep(1.0)
+                await asyncio.sleep(0.1)
                 items = []
-                while not self._write_queue.empty() and len(items) < 100:
+                while not self._write_queue.empty() and len(items) < 200:
                     try:
                         items.append(self._write_queue.get_nowait())
                     except asyncio.QueueEmpty:
@@ -201,13 +271,41 @@ class ApiObservabilityEngine:
                         )
                     elif t == "upload":
                         conn.execute(
-                            "INSERT INTO upload_events (timestamp, upload_type, size_bytes, latency_ms, success) VALUES (?, ?, ?, ?, ?)",
+                            "INSERT OR IGNORE INTO upload_events (timestamp, upload_type, size_bytes, latency_ms, success) VALUES (?, ?, ?, ?, ?)",
                             (d["timestamp"], d["upload_type"], d["size_bytes"], d["latency_ms"], d["success"])
                         )
                     elif t == "worker":
                         conn.execute(
                             "INSERT OR REPLACE INTO worker_stats (pid, last_seen, handled_requests, active_requests) VALUES (?, ?, ?, ?)",
                             (d["pid"], d["last_seen"], d["handled_requests"], d["active_requests"])
+                        )
+                    elif t == "discover_routes":
+                        for route, method in d:
+                            conn.execute(
+                                "INSERT OR IGNORE INTO endpoint_registry (route, method) VALUES (?, ?)",
+                                (route, method)
+                            )
+                    elif t == "active_request_update":
+                        conn.execute(
+                            """
+                            INSERT OR REPLACE INTO worker_endpoint_active (pid, route, method, active_requests, last_seen)
+                            VALUES (?, ?, ?, ?, ?)
+                            """,
+                            (d["pid"], d["route"], d["method"], d["active_requests"], d["last_seen"])
+                        )
+                    elif t == "failure":
+                        conn.execute(
+                            """
+                            INSERT INTO failures (
+                                timestamp, route, method, status_code, exception_type, exception_message,
+                                failure_reason, stack_trace, request_id, duration, worker_pid
+                            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                            """,
+                            (
+                                d["timestamp"], d["route"], d["method"], d["status_code"], d["exception_type"],
+                                d["exception_message"], d["failure_reason"], d["stack_trace"], d["request_id"],
+                                d["duration"], d["worker_pid"]
+                            )
                         )
                 conn.commit()
 
@@ -219,11 +317,44 @@ class ApiObservabilityEngine:
                 conn.execute("DELETE FROM auth_events WHERE timestamp < ?", (cutoff_str,))
                 conn.execute("DELETE FROM background_tasks WHERE timestamp < ?", (cutoff_str,))
                 conn.execute("DELETE FROM upload_events WHERE timestamp < ?", (cutoff_str,))
+                conn.execute("DELETE FROM failures WHERE timestamp < ?", (cutoff_str,))
+                
                 worker_cutoff = datetime.now(timezone.utc) - timedelta(minutes=5)
                 conn.execute("DELETE FROM worker_stats WHERE last_seen < ?", (worker_cutoff.isoformat(),))
+                conn.execute("DELETE FROM worker_endpoint_active WHERE last_seen < ?", (worker_cutoff.isoformat(),))
                 conn.commit()
         except Exception as e:
             logger.error("Failed to perform batch write to observability DB: %s", e)
+
+    def discover_routes(self, app: Any) -> None:
+        try:
+            routes = []
+            def _recurse_routes(router_or_app, prefix=""):
+                for route in getattr(router_or_app, "routes", []):
+                    if hasattr(route, "path") and hasattr(route, "methods"):
+                        path = prefix + route.path
+                        for method in route.methods:
+                            routes.append((path, method.upper()))
+                    elif hasattr(route, "app") and hasattr(route, "path"):
+                        _recurse_routes(route.app, prefix=prefix + route.path)
+                        
+            _recurse_routes(app)
+            self._write_queue.put_nowait({"type": "discover_routes", "data": routes})
+        except Exception as e:
+            logger.error("Failed to discover routes: %s", e)
+
+    def update_active_request(self, route: str, method: str, delta: int) -> None:
+        self.active_requests = max(0, self.active_requests + delta)
+        self._write_queue.put_nowait({
+            "type": "active_request_update",
+            "data": {
+                "pid": os.getpid(),
+                "route": route,
+                "method": method,
+                "active_requests": max(0, self.active_requests),
+                "last_seen": datetime.now(timezone.utc).isoformat()
+            }
+        })
 
     def record_request(self, **kwargs) -> None:
         self.handled_requests += 1
@@ -238,6 +369,9 @@ class ApiObservabilityEngine:
                 "active_requests": max(0, self.active_requests)
             }
         })
+
+    def record_failure(self, **kwargs) -> None:
+        self._write_queue.put_nowait({"type": "failure", "data": kwargs})
 
     def record_dependency_call(self, name: str, latency_ms: float, success: bool) -> None:
         self._write_queue.put_nowait({
@@ -325,7 +459,28 @@ class ApiObservabilityEngine:
             with sqlite3.connect(self.db_path, timeout=5) as conn:
                 conn.row_factory = sqlite3.Row
                 
-                # 1. Total & Success/Failure Counts
+                # 1. Fetch all discovered routes
+                cursor = conn.execute("SELECT route, method FROM endpoint_registry")
+                registered = [(r["route"], r["method"]) for r in cursor.fetchall()]
+                
+                # 2. Fetch all requests
+                cursor = conn.execute("SELECT route, method, status_code, processing_time, timestamp FROM requests")
+                raw_reqs = cursor.fetchall()
+                
+                # 3. Fetch all active requests per endpoint
+                cursor = conn.execute("SELECT route, method, sum(active_requests) as active FROM worker_endpoint_active GROUP BY route, method")
+                active_endpoint_map = {(r["route"], r["method"]): max(0, r["active"]) for r in cursor.fetchall()}
+                
+                # 4. Fetch failures
+                cursor = conn.execute(
+                    """
+                    SELECT route, method, timestamp, status_code, exception_type, exception_message, failure_reason, stack_trace, worker_pid
+                    FROM failures
+                    """
+                )
+                failures_raw = cursor.fetchall()
+
+                # Global summary metrics
                 cursor = conn.execute(
                     """
                     SELECT 
@@ -347,7 +502,6 @@ class ApiObservabilityEngine:
                     summary["min_latency"] = round(row["min_lat"] or 0.0, 2)
                     summary["max_latency"] = round(row["max_lat"] or 0.0, 2)
 
-                # 2. Latency Percentiles (P95, P99)
                 cursor = conn.execute("SELECT processing_time FROM requests ORDER BY processing_time ASC")
                 latencies = [r["processing_time"] for r in cursor.fetchall()]
                 if latencies:
@@ -355,7 +509,7 @@ class ApiObservabilityEngine:
                     summary["p95_latency"] = round(latencies[int(n * 0.95)], 2)
                     summary["p99_latency"] = round(latencies[int(n * 0.99)], 2)
 
-                # 3. Status Codes Distribution
+                # Status Codes
                 cursor = conn.execute("SELECT status_code, count(*) as cnt FROM requests GROUP BY status_code")
                 for r in cursor.fetchall():
                     sc = r["status_code"]
@@ -369,69 +523,142 @@ class ApiObservabilityEngine:
                     elif 500 <= sc:
                         status_codes["5xx"] += cnt
 
-                # 4. Requests Per Second (RPS) in last 10s
+                # RPS
                 cursor = conn.execute("SELECT count(*) as cnt FROM requests WHERE timestamp >= ?", (ten_sec_ago,))
                 ten_sec_count = cursor.fetchone()["cnt"]
                 current_rps = round(ten_sec_count / 10.0, 2)
                 summary["requests_per_second"] = current_rps
-                
-                # Update Peak RPS
                 if current_rps > self._peak_rps:
                     self._peak_rps = current_rps
                 summary["peak_rps"] = self._peak_rps
 
-                # 5. Active Requests (sum across workers)
                 cursor = conn.execute("SELECT sum(active_requests) as active FROM worker_stats")
                 summary["active_requests"] = cursor.fetchone()["active"] or 0
 
-                # 6. Endpoint Statistics
-                cursor = conn.execute("SELECT route, method, status_code, processing_time, timestamp FROM requests")
-                raw_reqs = cursor.fetchall()
+                # Grouping requests & failures in Python
                 from collections import defaultdict
-                endpoint_groups = defaultdict(list)
+                req_groups = defaultdict(list)
                 for r in raw_reqs:
-                    endpoint_groups[(r["route"], r["method"])].append(r)
+                    req_groups[(r["route"], r["method"])].append(r)
                 
-                for (route, method), reqs in endpoint_groups.items():
+                fail_groups = defaultdict(list)
+                for f in failures_raw:
+                    fail_groups[(f["route"], f["method"])].append(f)
+
+                # Dynamic per-endpoint calculations
+                all_endpoints = set(registered) | set(req_groups.keys())
+                for route, method in all_endpoints:
+                    reqs = req_groups[(route, method)]
+                    fails = fail_groups[(route, method)]
+                    
                     total_reqs = len(reqs)
-                    success = sum(1 for r in reqs if 200 <= r["status_code"] < 400)
-                    failure = total_reqs - success
+                    active = active_endpoint_map.get((route, method), 0)
                     
-                    latencies = sorted([r["processing_time"] for r in reqs])
-                    avg_lat = sum(latencies) / total_reqs
-                    min_lat = latencies[0]
-                    max_lat = latencies[-1]
-                    p95_lat = latencies[int(total_reqs * 0.95)]
-                    p99_lat = latencies[int(total_reqs * 0.99)]
+                    # Compute RPS
+                    ept_ten_sec = sum(1 for r in reqs if r["timestamp"] >= ten_sec_ago)
+                    ept_rps = round(ept_ten_sec / 10.0, 2)
                     
-                    sc_dist = {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
+                    success_cnt = sum(1 for r in reqs if 200 <= r["status_code"] < 400)
+                    failure_cnt = total_reqs - success_cnt
+                    
+                    success_rate = 100.0
+                    failure_rate = 0.0
+                    if total_reqs > 0:
+                        success_rate = round((success_cnt / total_reqs) * 100, 2)
+                        failure_rate = round((failure_cnt / total_reqs) * 100, 2)
+                    
+                    avg_l = min_l = max_l = p95_l = p99_l = 0.0
+                    last_called = None
+                    last_status = None
+                    
+                    if total_reqs > 0:
+                        lats = sorted([r["processing_time"] for r in reqs])
+                        avg_l = round(sum(lats) / total_reqs, 2)
+                        min_l = round(lats[0], 2)
+                        max_l = round(lats[-1], 2)
+                        p95_l = round(lats[int(total_reqs * 0.95)], 2)
+                        p99_l = round(lats[int(total_reqs * 0.99)], 2)
+                        
+                        sorted_reqs = sorted(reqs, key=lambda x: x["timestamp"], reverse=True)
+                        last_called = sorted_reqs[0]["timestamp"]
+                        last_status = sorted_reqs[0]["status_code"]
+                        
+                    # Health Status logic
+                    health_status = "healthy"
+                    if failure_rate > 10.0 or avg_l > 3000:
+                        health_status = "critical"
+                    elif failure_rate > 2.0 or avg_l > 1000 or p95_l > 2000:
+                        health_status = "warning"
+                        
+                    # Failure History
+                    last_failure_time = None
+                    most_common_failure = None
+                    latest_exception = None
+                    latest_error_message = None
+                    latest_fail_info = None
+                    
+                    if fails:
+                        sorted_fails = sorted(fails, key=lambda x: x["timestamp"], reverse=True)
+                        last_failure_time = sorted_fails[0]["timestamp"]
+                        latest_exception = sorted_fails[0]["exception_type"]
+                        latest_error_message = sorted_fails[0]["exception_message"]
+                        
+                        reasons = [f["failure_reason"] for f in fails if f["failure_reason"]]
+                        if reasons:
+                            most_common_failure = max(set(reasons), key=reasons.count)
+                            
+                        latest_fail_info = {
+                            "timestamp": last_failure_time,
+                            "status_code": sorted_fails[0]["status_code"],
+                            "exception_type": latest_exception,
+                            "exception_message": latest_error_message,
+                            "failure_reason": sorted_fails[0]["failure_reason"],
+                            "stack_trace": sorted_fails[0]["stack_trace"],
+                            "worker_pid": sorted_fails[0]["worker_pid"]
+                        }
+
+                    # Route Status code distribution
+                    route_sc = {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
                     for r in reqs:
                         sc = r["status_code"]
                         if 200 <= sc < 300:
-                            sc_dist["2xx"] += 1
+                            route_sc["2xx"] += 1
                         elif 300 <= sc < 400:
-                            sc_dist["3xx"] += 1
+                            route_sc["3xx"] += 1
                         elif 400 <= sc < 500:
-                            sc_dist["4xx"] += 1
+                            route_sc["4xx"] += 1
                         elif 500 <= sc:
-                            sc_dist["5xx"] += 1
-                            
-                    ten_sec_count = sum(1 for r in reqs if r["timestamp"] >= ten_sec_ago)
-                    rps = round(ten_sec_count / 10.0, 2)
-                    
+                            route_sc["5xx"] += 1
+
                     endpoints.append({
                         "route": route,
                         "method": method,
                         "total_requests": total_reqs,
-                        "requests_per_second": rps,
-                        "success_count": success,
-                        "failure_count": failure,
-                        "avg_latency": round(avg_lat, 2),
-                        "min_latency": round(min_lat, 2),
-                        "max_latency": round(max_lat, 2),
-                        "p95_latency": round(p95_lat, 2),
-                        "p99_latency": round(p99_lat, 2),
-                        "status_codes": sc_dist
+                        "requests_per_second": ept_rps,
+                        "active_requests": active,
+                        "success_count": success_cnt,
+                        "failure_count": failure_cnt,
+                        "success_rate": success_rate,
+                        "failure_rate": failure_rate,
+                        "avg_latency": avg_l,
+                        "min_latency": min_l,
+                        "max_latency": max_l,
+                        "p95": p95_l,
+                        "p99": p99_l,
+                        "last_called": last_called,
+                        "last_status_code": last_status,
+                        "health_status": health_status,
+                        "latest_failure_information": latest_fail_info,
+                        "latest_exception": latest_exception,
+                        "latest_error_message": latest_error_message,
+                        "failure_history": {
+                            "last_failure_time": last_failure_time,
+                            "failure_count": len(fails),
+                            "most_common_failure": most_common_failure,
+                            "latest_exception": latest_exception,
+                            "latest_error_message": latest_error_message
+                        } if fails else None,
+                        "status_codes": route_sc
                     })
 
                 # 7. Slow APIs Detection (latency >= 500ms)
@@ -446,19 +673,13 @@ class ApiObservabilityEngine:
                 )
                 for r in cursor.fetchall():
                     lat = r["processing_time"]
-                    if lat >= 3000:
-                        sev = "Critical"
-                    elif lat >= 1000:
-                        sev = "High"
-                    else:
-                        sev = "Warning"
                     slow_endpoints.append({
                         "route": r["route"],
                         "method": r["method"],
                         "latency": round(lat, 2),
                         "timestamp": r["timestamp"],
                         "status_code": r["status_code"],
-                        "severity": sev
+                        "severity": "Critical" if lat >= 3000 else "High" if lat >= 1000 else "Warning"
                     })
 
                 # 8. Exception Analytics
@@ -572,7 +793,6 @@ class ApiObservabilityEngine:
 
         # 13. Worker Details (psutil runtime mapping)
         workers_info = self.get_uvicorn_workers()
-        # Retrieve worker stats from database (handled requests, active requests)
         worker_details = []
         db_pids = set()
         try:
@@ -581,7 +801,6 @@ class ApiObservabilityEngine:
                 cursor = conn.execute("SELECT pid, handled_requests, active_requests FROM worker_stats")
                 for r in cursor.fetchall():
                     db_pids.add(r["pid"])
-                    # Find matching psutil worker
                     matching = next((w for w in workers_info if w["pid"] == r["pid"]), None)
                     worker_details.append({
                         "pid": r["pid"],
@@ -593,7 +812,6 @@ class ApiObservabilityEngine:
         except Exception:
             pass
 
-        # Calculate restart count (PIDs in DB but not currently active processes)
         active_pids = {w["pid"] for w in workers_info}
         restart_count = max(0, len(db_pids - active_pids))
 
@@ -603,7 +821,6 @@ class ApiObservabilityEngine:
             "worker_details": worker_details
         }
 
-        # 14. Compute Health Score & Alerts
         health_score, alerts = self.compute_health_score(summary, slow_endpoints, dependencies)
 
         return {
@@ -679,7 +896,6 @@ class ApiObservabilityEngine:
         failures = summary["failure_count"]
         avg_lat = summary["avg_latency"]
 
-        # Failure rate deduction (max 40 points)
         if total > 0:
             fail_rate = failures / total
             if fail_rate > 0.05:
@@ -691,7 +907,6 @@ class ApiObservabilityEngine:
                     "severity": "critical" if fail_rate > 0.15 else "warning"
                 })
 
-        # Latency deduction (max 20 points)
         if avg_lat > 500:
             deduction = 10 if avg_lat <= 1000 else 20
             score -= deduction
@@ -701,7 +916,6 @@ class ApiObservabilityEngine:
                 "severity": "warning" if avg_lat <= 1000 else "high"
             })
 
-        # Dependency failures deduction (max 20 points)
         for dep in dependencies:
             dep_total = dep["total_calls"]
             dep_fails = dep["failure_count"]
@@ -715,7 +929,6 @@ class ApiObservabilityEngine:
                         "severity": "high"
                     })
 
-        # Slow APIs deduction (max 20 points)
         crit_slow = sum(1 for s in slow_endpoints if s["severity"] == "Critical")
         high_slow = sum(1 for s in slow_endpoints if s["severity"] == "High")
         if crit_slow > 0 or high_slow > 0:
@@ -747,7 +960,6 @@ def patch_all_dependencies() -> None:
             url_str = str(request.url)
             from app.core.config import get_settings
             settings = get_settings()
-            # Prevent tracing own healthchecks and monitor pushes
             is_internal = "localhost" in url_str or "127.0.0.1" in url_str or settings.MONITOR_URL in url_str
             
             if is_internal:
@@ -935,17 +1147,29 @@ def patch_all_dependencies() -> None:
 
 from starlette.middleware.base import BaseHTTPMiddleware
 from fastapi import Request
+import uuid
 
 class ApiObservabilityMiddleware(BaseHTTPMiddleware):
+    def __init__(self, app, dispatch=None):
+        super().__init__(app, dispatch)
+        api_observability_engine.discover_routes(app)
+
     async def dispatch(self, request: Request, call_next):
-        from app.core.api_observability import api_observability_engine, get_route_template
-        api_observability_engine.active_requests += 1
+        from app.core.api_observability import api_observability_engine, get_route_template, classify_failure
+        
+        # Track Active Request startup
+        route = get_route_template(request)
+        method = request.method
+        api_observability_engine.update_active_request(route, method, 1)
         
         start_time = time.monotonic()
         timestamp = datetime.now(timezone.utc).isoformat()
         exception_type = None
+        exception_message = None
+        stack_trace = None
         status_code = 500
         response_size = 0
+        request_id = str(uuid.uuid4())
         
         try:
             response = await call_next(request)
@@ -991,21 +1215,55 @@ class ApiObservabilityMiddleware(BaseHTTPMiddleware):
                 elapsed = (time.monotonic() - start_time) * 1000
                 api_observability_engine.record_upload(upload_type, size_bytes, elapsed, success)
 
+            # Failure Logging for 4xx/5xx responses
+            if status_code >= 400:
+                failure_reason = classify_failure(status_code, None, None)
+                api_observability_engine.record_failure(
+                    timestamp=timestamp,
+                    route=route,
+                    method=method,
+                    status_code=status_code,
+                    exception_type=None,
+                    exception_message=None,
+                    failure_reason=failure_reason,
+                    stack_trace=None,
+                    request_id=request_id,
+                    duration=(time.monotonic() - start_time) * 1000,
+                    worker_pid=os.getpid()
+                )
+
             return response
         except Exception as e:
             exception_type = type(e).__name__
-            exc_msg = str(e).lower()
+            exception_message = str(e)
+            stack_trace = traceback.format_exc()
+            
+            # Classify token issues
+            exc_msg = exception_message.lower()
             if "expired" in exc_msg:
                 api_observability_engine.record_auth_event("token_expired")
             elif "invalid" in exc_msg or "jwt" in exc_msg:
                 api_observability_engine.record_auth_event("token_invalid")
+                
+            failure_reason = classify_failure(status_code, exception_type, exception_message)
+            api_observability_engine.record_failure(
+                timestamp=timestamp,
+                route=route,
+                method=method,
+                status_code=status_code,
+                exception_type=exception_type,
+                exception_message=exception_message,
+                failure_reason=failure_reason,
+                stack_trace=stack_trace,
+                request_id=request_id,
+                duration=(time.monotonic() - start_time) * 1000,
+                worker_pid=os.getpid()
+            )
             raise e
         finally:
-            api_observability_engine.active_requests = max(0, api_observability_engine.active_requests - 1)
+            api_observability_engine.update_active_request(route, method, -1)
             processing_time = (time.monotonic() - start_time) * 1000
             
-            method = request.method
-            route = get_route_template(request)
             client_ip = request.client.host if request.client else "unknown"
             user_agent = request.headers.get("user-agent", "unknown")
             
