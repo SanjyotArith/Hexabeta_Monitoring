@@ -10,11 +10,15 @@ class User(Base):
     username = Column(String(50), nullable=False, unique=True, index=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
     password_hash = Column(String(255), nullable=False)
+    full_name = Column(String(100), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
+    role = Column(String(20), nullable=False, default="user")  # admin | user
+    approval_status = Column(String(20), nullable=False, default="approved")  # pending | approved | rejected
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+
 
 
 class Session(Base):

@@ -92,13 +92,19 @@ class Log(Base):
     __tablename__ = "logs"
     
     id = Column(BigInteger, primary_key=True, index=True)
-    machine_id = Column(Integer, ForeignKey("machines.id", ondelete="CASCADE"), nullable=False, index=True)
+    machine_id = Column(Integer, ForeignKey("machines.id", ondelete="CASCADE"), nullable=True, index=True)
+    machine_name = Column(String(100), nullable=True, index=True)
     service_id = Column(Integer, ForeignKey("services.id", ondelete="SET NULL"), nullable=True, index=True)
+    service_name = Column(String(100), nullable=True, index=True)
     timestamp = Column(DateTime(timezone=True), nullable=False, index=True)
+    received_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
+    log_level = Column(String(20), nullable=True, index=True)
     log_type = Column(String(50), nullable=False) # 'nginx_access', 'nginx_error', 'app_error', etc.
     severity = Column(String(20), nullable=False, index=True) # 'debug', 'info', 'warning', 'error', 'critical'
     message = Column(Text, nullable=False)
+    source_file = Column(Text, nullable=True)
     metadata_json = Column("metadata", JSON, nullable=True)
+    created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     
     machine = relationship("Machine", back_populates="logs")
     service = relationship("Service", back_populates="logs")

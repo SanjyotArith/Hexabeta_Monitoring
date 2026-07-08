@@ -7,17 +7,11 @@ const PrivateRoute = ({ children }) => {
 
   if (loading) {
     return (
-      <div className="flex-center" style={{ height: "100vh", backgroundColor: "var(--bg-primary)" }}>
-        <div 
-          className="animate-spin" 
-          style={{ 
-            width: "36px", 
-            height: "36px", 
-            border: "3px solid var(--border-color)", 
-            borderTopColor: "var(--color-info)", 
-            borderRadius: "50%" 
-          }}
-        />
+      <div style={{
+        height: "100vh", display: "flex", alignItems: "center", justifyContent: "center",
+        backgroundColor: "var(--bg-base)"
+      }}>
+        <span className="spinner" style={{ width: 28, height: 28 }} />
       </div>
     );
   }

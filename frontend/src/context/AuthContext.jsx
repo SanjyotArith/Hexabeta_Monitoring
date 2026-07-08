@@ -4,25 +4,18 @@ const AuthContext = createContext(null);
 const API_BASE = import.meta.env.VITE_API_URL || "/api/v1";
 
 export const AuthProvider = ({ children }) => {
-  const [user, setUser] = useState(null);
-  const [token, setToken] = useState(null);
+  const [user, setUser]       = useState(null);
+  const [token, setToken]     = useState(null);
   const [loading, setLoading] = useState(true);
 
-  // Authenticated fetch wrapper which attaches the JWT token and auto-refreshes on 401
+  // ── Authenticated fetch with auto-refresh ──────────────────────────────
   const authFetch = async (url, options = {}) => {
-    let headers = {
-      "Content-Type": "application/json",
-      ...options.headers,
-    };
-
-    if (token) {
-      headers["Authorization"] = `Bearer ${token}`;
-    }
+    let headers = { "Content-Type": "application/json", ...options.headers };
+    if (token) headers["Authorization"] = `Bearer ${token}`;
 
     let response = await fetch(`${API_BASE}${url}`, { ...options, headers });
 
     if (response.status === 401 && !url.includes("/auth/login") && !url.includes("/auth/refresh")) {
-      // Token might be expired, attempt to refresh
       const refreshed = await refreshToken();
       if (refreshed) {
         headers["Authorization"] = `Bearer ${refreshed}`;
@@ -31,7 +24,6 @@ export const AuthProvider = ({ children }) => {
         logout();
       }
     }
-
     return response;
   };
 
@@ -40,16 +32,14 @@ export const AuthProvider = ({ children }) => {
       const response = await fetch(`${API_BASE}/auth/refresh`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
+        credentials: "include",
       });
-
       if (response.ok) {
         const data = await response.json();
         setToken(data.access_token);
         return data.access_token;
       }
-    } catch (err) {
-      console.error("Refresh token error:", err);
-    }
+    } catch (_) {}
     return null;
   };
 
@@ -60,14 +50,10 @@ export const AuthProvider = ({ children }) => {
       try {
         const response = await fetch(`${API_BASE}/auth/me`, {
           headers: { Authorization: `Bearer ${activeToken}` },
+          credentials: "include",
         });
-        if (response.ok) {
-          const userData = await response.json();
-          setUser(userData);
-        }
-      } catch (err) {
-        console.error("Fetch profile error:", err);
-      }
+        if (response.ok) setUser(await response.json());
+      } catch (_) {}
     }
     setLoading(false);
   };
@@ -76,51 +62,41 @@ export const AuthProvider = ({ children }) => {
     const response = await fetch(`${API_BASE}/auth/login`, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
+      credentials: "include",
       body: JSON.stringify({ username, password }),
     });
 
     if (!response.ok) {
       const data = await response.json();
       let errMsg = "Authentication failed";
-      if (data && data.detail) {
-        if (Array.isArray(data.detail)) {
-          errMsg = data.detail.map(err => err.msg).join(", ");
-        } else {
-          errMsg = data.detail;
-        }
+      if (data?.detail) {
+        errMsg = Array.isArray(data.detail)
+          ? data.detail.map(e => e.msg).join(", ")
+          : data.detail;
       }
       throw new Error(errMsg);
     }
 
     const data = await response.json();
     setToken(data.access_token);
-    
-    // Fetch profile
+
     const profileResponse = await fetch(`${API_BASE}/auth/me`, {
       headers: { Authorization: `Bearer ${data.access_token}` },
+      credentials: "include",
     });
-    
-    if (profileResponse.ok) {
-      const userData = await profileResponse.json();
-      setUser(userData);
-    }
-    
+    if (profileResponse.ok) setUser(await profileResponse.json());
     return true;
   };
 
   const logout = async () => {
     try {
-      await fetch(`${API_BASE}/auth/logout`, { method: "POST" });
-    } catch (err) {
-      console.error("Logout request error:", err);
-    }
+      await fetch(`${API_BASE}/auth/logout`, { method: "POST", credentials: "include" });
+    } catch (_) {}
     setToken(null);
     setUser(null);
   };
 
-  useEffect(() => {
-    checkAuth();
-  }, []);
+  useEffect(() => { checkAuth(); }, []);
 
   return (
     <AuthContext.Provider value={{ user, token, loading, login, logout, authFetch, checkAuth }}>

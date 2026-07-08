@@ -33,12 +33,11 @@ def start_scheduler():
             id="api_synthetic_checks",
             max_instances=1
         )
-        # Runs database retention cleanup once a day at 2:00 AM
+        # Runs database retention cleanup every hour
         scheduler.add_job(
             run_data_retention_cleanup,
-            "cron",
-            hour=2,
-            minute=0,
+            "interval",
+            hours=1,
             id="database_retention_cleanup"
         )
         scheduler.start()

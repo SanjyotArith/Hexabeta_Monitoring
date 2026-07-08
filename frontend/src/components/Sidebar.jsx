@@ -1,63 +1,63 @@
 import React from "react";
 import { NavLink, useNavigate } from "react-router-dom";
 import { useAuth } from "../context/AuthContext";
-import { 
-  LayoutDashboard, 
-  FolderKanban, 
-  Server, 
-  Activity, 
-  Globe, 
-  LineChart, 
-  FileText, 
-  AlertTriangle, 
-  Settings, 
-  LogOut 
+import { useTheme } from "../context/ThemeContext";
+import {
+  LayoutDashboard, FileText, Settings, LogOut, Sun, Moon, Activity
 } from "lucide-react";
 
 const Sidebar = () => {
-  const { logout } = useAuth();
+  const { logout, user } = useAuth();
+  const { theme, toggleTheme } = useTheme();
   const navigate = useNavigate();
-
-  const menuItems = [
-    { name: "Dashboard", path: "/", icon: <LayoutDashboard size={18} /> },
-    { name: "Projects", path: "/projects", icon: <FolderKanban size={18} /> },
-    { name: "Machines", path: "/machines", icon: <Server size={18} /> },
-    { name: "Services", path: "/services", icon: <Activity size={18} /> },
-    { name: "API Monitor", path: "/api-monitor", icon: <Globe size={18} /> },
-    { name: "Metrics", path: "/metrics", icon: <LineChart size={18} /> },
-    { name: "Logs", path: "/logs", icon: <FileText size={18} /> },
-    { name: "Alerts & Incidents", path: "/alerts", icon: <AlertTriangle size={18} /> },
-    { name: "Settings", path: "/settings", icon: <Settings size={18} /> },
-  ];
 
   const handleLogout = async () => {
     await logout();
     navigate("/login");
   };
 
+  const menuItems = [
+    { name: "Dashboard", path: "/",      icon: <LayoutDashboard size={16} />, end: true },
+    { name: "Logs",      path: "/logs",  icon: <FileText size={16} /> },
+    { name: "Settings",  path: "/settings", icon: <Settings size={16} /> },
+  ];
+
   return (
     <aside className="sidebar">
       <div className="sidebar-brand">
-        <div className="brand-icon">HM</div>
+        <div className="brand-logo">HM</div>
         <span className="brand-name">HexaMonitor</span>
       </div>
-      
+
       <nav className="sidebar-nav">
-        {menuItems.map((item) => (
-          <NavLink 
-            key={item.path} 
-            to={item.path} 
-            className={({ isActive }) => `nav-item ${isActive ? 'active' : ''}`}
+        <div className="nav-section-label">Navigation</div>
+        {menuItems.map(item => (
+          <NavLink
+            key={item.path}
+            to={item.path}
+            end={item.end}
+            className={({ isActive }) => `nav-item${isActive ? " active" : ""}`}
           >
             {item.icon}
             <span className="nav-label">{item.name}</span>
           </NavLink>
         ))}
       </nav>
-      
+
       <div className="sidebar-footer">
-        <button className="nav-item logout-btn" onClick={handleLogout}>
-          <LogOut size={18} />
+        <div className="theme-toggle-row">
+          <span className="theme-toggle-label">
+            {theme === "dark" ? <Moon size={13} /> : <Sun size={13} />}
+            {theme === "dark" ? "Dark Mode" : "Light Mode"}
+          </span>
+          <label className="toggle-switch">
+            <input type="checkbox" checked={theme === "light"} onChange={toggleTheme} />
+            <span className="toggle-track" />
+            <span className="toggle-thumb" />
+          </label>
+        </div>
+        <button className="nav-item logout-btn" onClick={handleLogout} style={{ width: "100%", color: "var(--danger)" }}>
+          <LogOut size={16} />
           <span className="nav-label">Sign Out</span>
         </button>
       </div>

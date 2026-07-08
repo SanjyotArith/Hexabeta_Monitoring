@@ -232,6 +232,209 @@ async def list_active_incidents(
     )
     return result.scalars().all()
 
+@router.get("/incidents/detailed")
+async def list_detailed_incidents(
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Retrieves all incidents (active, acknowledged, resolved) with rich metadata, alerts, and logs."""
+    from app.models.alerting import Incident, Alert, AlertRule
+    from app.models.telemetry import Heartbeat, ApiCheckHistory, ServiceStatusHistory, Log
+    from app.models.infrastructure import Service, Machine, Agent, Environment, Project
+    from app.api.v1.snapshot import _LATEST_SNAPSHOT
+    from sqlalchemy.orm import selectinload
+    from sqlalchemy import and_, or_
+    
+    project_name = _LATEST_SNAPSHOT.get("project", "HexaBeta")
+    env_name = _LATEST_SNAPSHOT.get("environment", "production")
+    
+    env_res = await db.execute(
+        select(Environment)
+        .join(Project)
+        .where(Project.name == project_name, Environment.name == env_name)
+    )
+    env = env_res.scalars().first()
+    if not env:
+        # Default to first environment in DB if not found
+        env_res = await db.execute(select(Environment).limit(1))
+        env = env_res.scalars().first()
+        
+    if not env:
+        return []
+        
+    env_id = env.id
+    
+    # Fetch all incidents for environment
+    result = await db.execute(
+        select(Incident)
+        .where(Incident.environment_id == env_id)
+        .options(
+            selectinload(Incident.alerts).selectinload(Alert.rule),
+            selectinload(Incident.alerts).selectinload(Alert.service),
+            selectinload(Incident.alerts).selectinload(Alert.machine),
+            selectinload(Incident.alerts).selectinload(Alert.api_check)
+        )
+        .order_by(desc(Incident.started_at))
+    )
+    incidents = result.scalars().all()
+    
+    detailed_incidents = []
+    
+    for inc in incidents:
+        # Defaults
+        service_name = "N/A"
+        component = "System"
+        alert_type = "Generic Alert"
+        problem_desc = inc.title
+        suggested_res = "Triage the alert, check application logs and system status."
+        exact_error = "No specific error message recorded."
+        health_details = {}
+        last_heartbeat = None
+        occurrences = len(inc.alerts)
+        last_detected = inc.resolved_at or inc.started_at
+        logs = []
+        
+        # Extract details from alerts if present
+        if inc.alerts:
+            first_alert = inc.alerts[0]
+            # Find latest alert timestamp
+            alert_times = [a.started_at for a in inc.alerts]
+            if alert_times:
+                last_detected = max(alert_times)
+                
+            exact_error = first_alert.message
+            problem_desc = first_alert.message
+            
+            # Determine Service / Component details
+            if first_alert.service:
+                service_name = first_alert.service.name
+                component = f"Service: {service_name}"
+                suggested_res = f"Inspect process status on host. Try restarting service '{service_name}'."
+            elif first_alert.api_check:
+                component = f"API Check: {first_alert.api_check.name}"
+                suggested_res = f"Verify API endpoint accessibility and response payload/headers for '{first_alert.api_check.url}'."
+            elif first_alert.machine:
+                component = f"Host: {first_alert.machine.name}"
+                suggested_res = f"Check CPU, memory, and disk utilization on host '{first_alert.machine.name}'."
+                
+            # Determine Alert Type
+            if first_alert.rule:
+                alert_type = first_alert.rule.check_type.replace("_", " ").title()
+                
+            # Fetch Health Check / Service Status Details
+            if first_alert.api_check_id:
+                history_res = await db.execute(
+                    select(ApiCheckHistory)
+                    .where(ApiCheckHistory.api_check_id == first_alert.api_check_id)
+                    .order_by(desc(ApiCheckHistory.timestamp))
+                    .limit(1)
+                )
+                hist = history_res.scalars().first()
+                if hist:
+                    health_details = {
+                        "is_up": hist.is_up,
+                        "response_time_ms": hist.response_time_ms,
+                        "status_code": hist.status_code,
+                        "error_message": hist.error_message
+                    }
+            elif first_alert.service_id:
+                history_res = await db.execute(
+                    select(ServiceStatusHistory)
+                    .where(ServiceStatusHistory.service_id == first_alert.service_id)
+                    .order_by(desc(ServiceStatusHistory.timestamp))
+                    .limit(1)
+                )
+                hist = history_res.scalars().first()
+                if hist:
+                    health_details = {
+                        "status": hist.status,
+                        "cpu_usage": hist.cpu_usage,
+                        "ram_used_bytes": hist.ram_used_bytes,
+                        "details": hist.details
+                    }
+                    
+            # Fetch Last Successful Heartbeat
+            machine_id = first_alert.machine_id or (first_alert.service.machine_id if first_alert.service else None)
+            if machine_id:
+                agent_res = await db.execute(select(Agent).where(Agent.machine_id == machine_id))
+                agent = agent_res.scalars().first()
+                if agent:
+                    hb_res = await db.execute(
+                        select(Heartbeat)
+                        .where(Heartbeat.agent_id == agent.id)
+                        .order_by(desc(Heartbeat.timestamp))
+                        .limit(1)
+                    )
+                    hb = hb_res.scalars().first()
+                    if hb:
+                        last_heartbeat = hb.timestamp
+                        
+            # Fetch Relevant Logs (+/- 5 mins)
+            log_filters = []
+            if machine_id:
+                log_filters.append(Log.machine_id == machine_id)
+            if first_alert.service_id:
+                log_filters.append(Log.service_id == first_alert.service_id)
+                
+            if log_filters:
+                # 5 minutes before and after started_at
+                import datetime as dt
+                start_window = inc.started_at - dt.timedelta(minutes=5)
+                end_window = inc.started_at + dt.timedelta(minutes=5)
+                
+                logs_res = await db.execute(
+                    select(Log)
+                    .where(and_(
+                        or_(*log_filters),
+                        Log.timestamp >= start_window,
+                        Log.timestamp <= end_window
+                    ))
+                    .order_by(desc(Log.timestamp))
+                    .limit(15)
+                )
+                logs = [
+                    {
+                        "timestamp": l.timestamp,
+                        "severity": l.severity,
+                        "message": l.message,
+                        "log_type": l.log_type
+                    } for l in logs_res.scalars().all()
+                ]
+                
+        # Find related audit record from operations history
+        from app.api.v1.operations import _AUDIT_RECORDS
+        related_audit = None
+        for op in _AUDIT_RECORDS.values():
+            if service_name != "N/A" and op["service"].lower() == service_name.lower():
+                related_audit = op
+                break
+                
+        detailed_incidents.append({
+            "id": inc.id,
+            "environment_id": inc.environment_id,
+            "title": inc.title,
+            "status": inc.status,
+            "severity": inc.severity,
+            "started_at": inc.started_at,
+            "acknowledged_at": inc.acknowledged_at,
+            "resolved_at": inc.resolved_at,
+            "service_name": service_name,
+            "component": component,
+            "alert_type": alert_type,
+            "problem_description": problem_desc,
+            "suggested_resolution": suggested_res,
+            "related_audit": related_audit,
+            "exact_error_message": exact_error,
+            "health_check_details": health_details,
+            "last_successful_heartbeat": last_heartbeat,
+            "first_detected_time": inc.started_at,
+            "last_detected_time": last_detected,
+            "occurrences": occurrences,
+            "relevant_logs": logs
+        })
+        
+    return detailed_incidents
+
 @router.post("/incidents/{incident_id}/acknowledge", response_model=IncidentResponse)
 async def acknowledge_incident(
     incident_id: int,
@@ -246,6 +449,33 @@ async def acknowledge_incident(
         
     incident.status = "acknowledged"
     incident.acknowledged_at = datetime.now(timezone.utc)
+    await db.commit()
+    await db.refresh(incident)
+    return incident
+
+@router.post("/incidents/{incident_id}/resolve", response_model=IncidentResponse)
+async def resolve_incident(
+    incident_id: int,
+    db: AsyncSession = Depends(get_db),
+    current_user: User = Depends(get_current_user)
+):
+    """Resolves an active or acknowledged incident."""
+    result = await db.execute(select(Incident).where(Incident.id == incident_id))
+    incident = result.scalars().first()
+    if not incident:
+        raise HTTPException(status_code=404, detail="Incident not found")
+        
+    incident.status = "resolved"
+    incident.resolved_at = datetime.utcnow()
+    
+    # Also resolve all associated alerts
+    from app.models.alerting import Alert
+    alerts_result = await db.execute(
+        select(Alert).where((Alert.incident_id == incident_id) & (Alert.resolved_at == None))
+    )
+    for alert in alerts_result.scalars().all():
+        alert.resolved_at = datetime.utcnow()
+        
     await db.commit()
     await db.refresh(incident)
     return incident
