@@ -37,7 +37,9 @@ def get_route_template(request: Any) -> str:
 
 class ApiObservabilityEngine:
     def __init__(self) -> None:
-        self.db_dir = Path(__file__).resolve().parent.parent.parent / "data"
+        from app.core.config import get_settings
+        settings = get_settings()
+        self.db_dir = Path(settings.HEXABETA_BACKEND_PATH) / "data"
         self.db_path = self.db_dir / "api_observability.db"
         self._write_queue: asyncio.Queue = asyncio.Queue()
         self._flush_task: Optional[asyncio.Task] = None
@@ -48,7 +50,7 @@ class ApiObservabilityEngine:
 
     def _init_db(self) -> None:
         try:
-            self.db_dir.mkdir(exist_ok=True)
+            self.db_dir.mkdir(parents=True, exist_ok=True)
             with sqlite3.connect(self.db_path, timeout=10) as conn:
                 conn.execute("PRAGMA journal_mode=WAL;")
                 conn.execute("PRAGMA synchronous=NORMAL;")
@@ -613,19 +615,24 @@ class ApiObservabilityEngine:
             current_proc = psutil.Process(os.getpid())
             parent_proc = current_proc.parent()
             
-            if parent_proc:
-                children = parent_proc.children(recursive=False)
-                for child in children:
-                    try:
-                        cpu = child.cpu_percent(interval=None)
-                        mem_mb = round(child.memory_info().rss / (1024 * 1024), 2)
-                        workers.append({
-                            "pid": child.pid,
-                            "cpu_percent": cpu,
-                            "memory_mb": mem_mb
-                        })
-                    except (psutil.NoSuchProcess, psutil.AccessDenied):
-                        continue
+            if parent_proc and parent_proc.pid > 1:
+                parent_name = parent_proc.name().lower()
+                if "launchd" not in parent_name and "systemd" not in parent_name and "init" not in parent_name:
+                    children = parent_proc.children(recursive=False)
+                    for child in children:
+                        try:
+                            c_name = child.name().lower()
+                            c_cmd = " ".join(child.cmdline()).lower()
+                            if "python" in c_name or "uvicorn" in c_name or "main.py" in c_cmd or "app.main" in c_cmd:
+                                cpu = child.cpu_percent(interval=None)
+                                mem_mb = round(child.memory_info().rss / (1024 * 1024), 2)
+                                workers.append({
+                                    "pid": child.pid,
+                                    "cpu_percent": cpu,
+                                    "memory_mb": mem_mb
+                                })
+                        except (psutil.NoSuchProcess, psutil.AccessDenied):
+                            continue
             
             if not workers:
                 cpu = current_proc.cpu_percent(interval=None)
