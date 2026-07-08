@@ -385,28 +385,53 @@ class ApiObservabilityEngine:
                 summary["active_requests"] = cursor.fetchone()["active"] or 0
 
                 # 6. Endpoint Statistics
-                cursor = conn.execute(
-                    """
-                    SELECT route, method, count(*) as total,
-                           sum(case when status_code >= 200 and status_code < 400 then 1 else 0 end) as success,
-                           sum(case when status_code >= 400 or exception_type is not null then 1 else 0 end) as failure,
-                           avg(processing_time) as avg_lat,
-                           min(processing_time) as min_lat,
-                           max(processing_time) as max_lat
-                    FROM requests
-                    GROUP BY route, method
-                    """
-                )
-                for r in cursor.fetchall():
+                cursor = conn.execute("SELECT route, method, status_code, processing_time, timestamp FROM requests")
+                raw_reqs = cursor.fetchall()
+                from collections import defaultdict
+                endpoint_groups = defaultdict(list)
+                for r in raw_reqs:
+                    endpoint_groups[(r["route"], r["method"])].append(r)
+                
+                for (route, method), reqs in endpoint_groups.items():
+                    total_reqs = len(reqs)
+                    success = sum(1 for r in reqs if 200 <= r["status_code"] < 400)
+                    failure = total_reqs - success
+                    
+                    latencies = sorted([r["processing_time"] for r in reqs])
+                    avg_lat = sum(latencies) / total_reqs
+                    min_lat = latencies[0]
+                    max_lat = latencies[-1]
+                    p95_lat = latencies[int(total_reqs * 0.95)]
+                    p99_lat = latencies[int(total_reqs * 0.99)]
+                    
+                    sc_dist = {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
+                    for r in reqs:
+                        sc = r["status_code"]
+                        if 200 <= sc < 300:
+                            sc_dist["2xx"] += 1
+                        elif 300 <= sc < 400:
+                            sc_dist["3xx"] += 1
+                        elif 400 <= sc < 500:
+                            sc_dist["4xx"] += 1
+                        elif 500 <= sc:
+                            sc_dist["5xx"] += 1
+                            
+                    ten_sec_count = sum(1 for r in reqs if r["timestamp"] >= ten_sec_ago)
+                    rps = round(ten_sec_count / 10.0, 2)
+                    
                     endpoints.append({
-                        "route": r["route"],
-                        "method": r["method"],
-                        "total_requests": r["total"],
-                        "success_count": r["success"] or 0,
-                        "failure_count": r["failure"] or 0,
-                        "avg_latency": round(r["avg_lat"] or 0.0, 2),
-                        "min_latency": round(r["min_lat"] or 0.0, 2),
-                        "max_latency": round(r["max_lat"] or 0.0, 2)
+                        "route": route,
+                        "method": method,
+                        "total_requests": total_reqs,
+                        "requests_per_second": rps,
+                        "success_count": success,
+                        "failure_count": failure,
+                        "avg_latency": round(avg_lat, 2),
+                        "min_latency": round(min_lat, 2),
+                        "max_latency": round(max_lat, 2),
+                        "p95_latency": round(p95_lat, 2),
+                        "p99_latency": round(p99_lat, 2),
+                        "status_codes": sc_dist
                     })
 
                 # 7. Slow APIs Detection (latency >= 500ms)
