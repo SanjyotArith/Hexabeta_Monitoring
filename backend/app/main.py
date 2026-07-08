@@ -81,6 +81,14 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     collector_registry.register(SystemProvider())
     collector_registry.register(AvailabilityProvider())
 
+    # ---- Phase 3 Providers & Engine ----
+    from app.providers.api_provider import ApiProvider
+    from app.core.api_observability import api_observability_engine, patch_all_dependencies
+    
+    collector_registry.register(ApiProvider())
+    patch_all_dependencies()
+    api_observability_engine.start()
+
     logger.info(
         "Registered collectors/providers: %s",
         ", ".join(collector_registry.registered),
@@ -106,6 +114,7 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("HexaAgent shutting down")
 
     # ---- Graceful shutdown ----
+    await api_observability_engine.stop()
     await snapshot_manager.stop()
     await snapshot_pusher.stop()
     await reporter.stop()
@@ -113,7 +122,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await history_engine.stop()
     await operations_poller.stop()
     await log_pusher.stop()
-
 
 
 # ---------------------------------------------------------------------------
@@ -138,6 +146,10 @@ app.add_middleware(
     allow_methods=["GET", "POST", "OPTIONS"],
     allow_headers=["*"],
 )
+
+# API Observability Middleware (Phase 3)
+from app.core.api_observability import ApiObservabilityMiddleware
+app.add_middleware(ApiObservabilityMiddleware)
 
 # Mount API routers
 app.include_router(system_router, prefix="/api/v1")     # Phase 1 (unchanged)

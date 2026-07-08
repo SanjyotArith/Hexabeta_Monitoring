@@ -39,6 +39,7 @@ _SECTION_MAP: dict[str, tuple[str, str]] = {
     "git": ("deployment", "git"),
     "availability": ("availability", "_root"),  # special: spread into section
     "system": ("system", "_root"),  # special: spread into section
+    "api": ("api", "_root"),  # Phase 3
 }
 
 
@@ -72,6 +73,7 @@ class SnapshotManager:
                 "deployment": {},
                 "availability": {},
                 "system": {},
+                "api": {},
                 "alerts": [],
                 "maintenance": False,
                 "operation_queue": {"active": None, "pending": [], "pending_count": 0},
@@ -99,6 +101,7 @@ class SnapshotManager:
             "deployment": {},
             "availability": {},
             "system": {},
+            "api": {},
             "alerts": [],
             "maintenance": False,
             "operation_queue": {},
