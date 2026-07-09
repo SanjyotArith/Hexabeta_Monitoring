@@ -138,6 +138,70 @@ const LogsPage = () => {
   const [services, setServices] = useState([]);
 
   const [activeSection, setActiveSection] = useState("live"); // live | history
+  const [showExportMenu, setShowExportMenu] = useState(false);
+
+  const getExportFilename = (format) => {
+    let startStr = "";
+    let endStr = "";
+    if (histLogs.length > 0) {
+      const timestamps = histLogs.map(l => new Date(l.timestamp || l.created_at || Date.now()).getTime());
+      const minTs = Math.min(...timestamps);
+      const maxTs = Math.max(...timestamps);
+      const formatDateStr = (ts) => {
+        const d = new Date(ts);
+        const yyyy = d.getFullYear();
+        const mm = String(d.getMonth() + 1).padStart(2, "0");
+        const dd = String(d.getDate()).padStart(2, "0");
+        const hh = String(d.getHours()).padStart(2, "0");
+        const min = String(d.getMinutes()).padStart(2, "0");
+        return `${yyyy}-${mm}-${dd}_${hh}-${min}`;
+      };
+      startStr = formatDateStr(minTs);
+      endStr = formatDateStr(maxTs);
+    } else {
+      const now = new Date();
+      const yyyy = now.getFullYear();
+      const mm = String(now.getMonth() + 1).padStart(2, "0");
+      const dd = String(now.getDate()).padStart(2, "0");
+      const hh = String(now.getHours()).padStart(2, "0");
+      const min = String(now.getMinutes()).padStart(2, "0");
+      startStr = `${yyyy}-${mm}-${dd}_${hh}-${min}`;
+      endStr = startStr;
+    }
+    return `logs_${startStr}_to_${endStr}.${format}`;
+  };
+
+  const triggerDownload = (format) => {
+    if (histLogs.length === 0) return;
+    let content = "";
+    let mimeType = "";
+    if (format === "json") {
+      content = JSON.stringify(histLogs, null, 2);
+      mimeType = "application/json";
+    } else if (format === "csv") {
+      const headers = ["timestamp", "log_level", "service_name", "machine_name", "message", "exception"];
+      const csvRows = [headers.join(",")];
+      for (const log of histLogs) {
+        const values = headers.map(header => {
+          let val = log[header] || "";
+          val = String(val).replace(/"/g, '""');
+          return `"${val}"`;
+        });
+        csvRows.push(values.join(","));
+      }
+      content = csvRows.join("\n");
+      mimeType = "text/csv";
+    }
+    const blob = new Blob([content], { type: mimeType });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = getExportFilename(format);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  };
 
   // ── WebSocket connection ─────────────────────────────────────────────────
   const connectWs = useCallback(() => {
@@ -250,7 +314,7 @@ const LogsPage = () => {
 
   useEffect(() => {
     if (activeSection === "history") fetchHistory(1);
-  }, [activeSection, histMachine, histService, histLevel, histPreset]);
+  }, [activeSection, histMachine, histService, histLevel, histPreset, histStartTime, histEndTime]);
 
   // ── Filtered live logs ───────────────────────────────────────────────────
   const filteredLive = liveLogs.filter(l => {
@@ -495,10 +559,38 @@ const LogsPage = () => {
                 </>
               )}
 
-              <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem" }}>
+              <div style={{ marginLeft: "auto", display: "flex", gap: "0.5rem", alignItems: "center" }}>
                 <button onClick={() => fetchHistory(1)} className="btn btn-primary btn-sm">
                   <RefreshCw size={13} />Query Logs
                 </button>
+                <div style={{ position: "relative" }}>
+                  <button
+                    onClick={() => setShowExportMenu(!showExportMenu)}
+                    disabled={histLogs.length === 0}
+                    className="btn btn-ghost btn-sm"
+                    style={{ display: "flex", alignItems: "center", gap: "4px", border: "1px solid var(--border)", height: "30px", fontSize: "0.75rem", padding: "0 10px" }}
+                  >
+                    <Download size={13} /> Download Logs
+                  </button>
+                  {showExportMenu && (
+                    <div style={{
+                      position: "absolute", right: 0, top: "100%", marginTop: 4, zIndex: 100,
+                      backgroundColor: "var(--bg-card)", border: "1px solid var(--border)", borderRadius: 6,
+                      boxShadow: "var(--shadow-md)", overflow: "hidden", display: "flex", flexDirection: "column", minWidth: 120
+                    }}>
+                      <button
+                        onClick={() => { triggerDownload("csv"); setShowExportMenu(false); }}
+                        style={{ padding: "8px 12px", fontSize: "0.75rem", textAlign: "left", background: "none", border: "none", cursor: "pointer", color: "var(--text-primary)", display: "flex", width: "100%" }}
+                        className="nav-item-hover"
+                      >As CSV</button>
+                      <button
+                        onClick={() => { triggerDownload("json"); setShowExportMenu(false); }}
+                        style={{ padding: "8px 12px", fontSize: "0.75rem", textAlign: "left", background: "none", border: "none", cursor: "pointer", color: "var(--text-primary)", display: "flex", width: "100%" }}
+                        className="nav-item-hover"
+                      >As JSON</button>
+                    </div>
+                  )}
+                </div>
               </div>
             </div>
           </div>
@@ -518,7 +610,7 @@ const LogsPage = () => {
                     disabled={histPage === 1 || histLoading}
                     className="btn btn-ghost btn-sm"
                   >← Prev</button>
-                  <span>Page {page} / {Math.ceil(histTotal / HIST_LIMIT)}</span>
+                  <span>Page {histPage} / {Math.ceil(histTotal / HIST_LIMIT)}</span>
                   <button
                     onClick={() => fetchHistory(histPage + 1)}
                     disabled={histPage >= Math.ceil(histTotal / HIST_LIMIT) || histLoading}

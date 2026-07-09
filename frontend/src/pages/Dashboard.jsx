@@ -69,6 +69,27 @@ function StatusBadge({ status }) {
   );
 }
 
+// ─── Confirm Dialog ──────────────────────────────────────────────────────────
+function ConfirmDialog({ isOpen, title, message, onConfirm, onCancel, isLoading }) {
+  if (!isOpen) return null;
+  return (
+    <div style={{ position: "fixed", inset: 0, zIndex: 10000, display: "flex", alignItems: "center", justifyContent: "center", background: "rgba(0,0,0,0.5)", backdropFilter: "blur(2px)" }}>
+      <div className="card" style={{ width: "90%", maxWidth: 400, padding: 24, animation: "fadeIn 0.2s ease-out" }}>
+        <h3 style={{ marginTop: 0, marginBottom: 8, fontSize: "1.1rem" }}>{title}</h3>
+        <p style={{ color: "var(--text-muted)", fontSize: "0.85rem", marginBottom: 24, lineHeight: 1.5 }}>
+          {message}
+        </p>
+        <div style={{ display: "flex", justifyContent: "flex-end", gap: 12 }}>
+          <button className="btn btn-ghost" onClick={onCancel} disabled={isLoading}>Cancel</button>
+          <button className="btn btn-primary" onClick={onConfirm} disabled={isLoading} style={{ minWidth: 120 }}>
+            {isLoading ? <span className="spinner" style={{ width: 14, height: 14, borderRightColor: "#fff" }} /> : "Confirm"}
+          </button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
 // ─── Toast ───────────────────────────────────────────────────────────────────
 function Toast({ toasts, remove }) {
   return (
@@ -163,7 +184,7 @@ const Dashboard = () => {
   const [ops,        setOps]        = useState([]);
   const [loading,    setLoading]    = useState(true);
   const [lastSync,   setLastSync]   = useState(null);
-  const [busySvc,    setBusySvc]    = useState({});   // { svcName: "start"|"stop"|"restart" }
+  const [confirmOp,  setConfirmOp]  = useState(null); // { svcName, operation, loading }
 
   // ── Fetch all data ─────────────────────────────────────────────────────────
   const fetchAll = useCallback(async () => {
@@ -228,8 +249,15 @@ const Dashboard = () => {
   }, [fetchAll]);
 
   // ── Service operation ──────────────────────────────────────────────────────
-  const runOp = useCallback(async (svcName, operation) => {
-    setBusySvc(b => ({ ...b, [svcName]: operation }));
+  const handleOpClick = useCallback((svcName, operation) => {
+    setConfirmOp({ svcName, operation, loading: false });
+  }, []);
+
+  const confirmRunOp = useCallback(async () => {
+    if (!confirmOp) return;
+    const { svcName, operation } = confirmOp;
+    
+    setConfirmOp(prev => ({ ...prev, loading: true }));
     try {
       const valR = await authFetch("/operations/validate", {
         method: "POST",
@@ -251,9 +279,10 @@ const Dashboard = () => {
       setTimeout(() => fetchAll(), 3000);
     } catch (e) {
       toast(`Failed to ${operation} ${svcName}: ${e.message}`, "error");
+    } finally {
+      setConfirmOp(null);
     }
-    setBusySvc(b => { const nb = { ...b }; delete nb[svcName]; return nb; });
-  }, [authFetch, fetchAll, toast]);
+  }, [authFetch, fetchAll, toast, confirmOp]);
 
   // ── Derived values ─────────────────────────────────────────────────────────
   const snap = snapshot || {};
@@ -338,10 +367,29 @@ const Dashboard = () => {
     );
   };
 
+  const formatStorage = (gbValue) => {
+    if (gbValue == null) return "—";
+    if (gbValue < 1) {
+      return `${Math.round(gbValue * 1024)} MB`;
+    }
+    return `${gbValue.toFixed(2)} GB`;
+  };
+
+  const met = metrics || {};
+
   // ── Render ─────────────────────────────────────────────────────────────────
   return (
     <div className="page-container fade-in" style={{ gap: 0, paddingBottom: 32 }}>
       <Toast toasts={toasts} remove={remove} />
+      
+      <ConfirmDialog 
+        isOpen={!!confirmOp}
+        title="Confirm Operation"
+        message={`Are you sure you want to ${confirmOp?.operation} the ${confirmOp?.svcName} service? This operation may temporarily interrupt the service.`}
+        onConfirm={confirmRunOp}
+        onCancel={() => setConfirmOp(null)}
+        isLoading={confirmOp?.loading}
+      />
 
       {/* ── Page header ──────────────────────────────────────────────────── */}
       <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 20 }}>
@@ -428,16 +476,143 @@ const Dashboard = () => {
               </div>
             </div>
 
-            {/* Resource bars */}
-            {(cpuPct != null || memGb != null || diskPct != null) && (
-              <div style={{ marginTop: 16, display: "grid", gridTemplateColumns: "repeat(3, 1fr)", gap: 16, paddingTop: 14, borderTop: "1px solid var(--border)" }}>
-                <ResourceBar label="CPU" value={cpuPct} icon={<Cpu size={12} />} color={C.blue} />
-                <ResourceBar label="Memory" value={memGb != null ? Math.round(memGb / 0.16) : null} icon={<MemoryStick size={12} />} color={C.purple} />
-                <ResourceBar label="Disk" value={diskPct} icon={<HardDrive size={12} />} color={C.teal} />
+          </div>
+        )}
+      </div>
+
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      {/* SECTION 1.5 — System Resources & Deployment & HTTP & Alerts       */}
+      {/* ══════════════════════════════════════════════════════════════════ */}
+      <div className="dashboard-grid-three-col">
+        
+        {/* LEFT: System Resources */}
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <div className="card" style={{ flex: 1 }}>
+            <SectionTitle icon={<Cpu />}>System Resources</SectionTitle>
+            {loading ? (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <Sk h={50} /><Sk h={50} /><Sk h={50} /><Sk h={50} />
+              </div>
+            ) : (
+              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                <SumCard label="CPU Usage" value={met?.CPU?.utilization != null ? `${met.CPU.utilization.toFixed(1)}%` : "—"} color={C.blue} icon={<Cpu />} />
+                <SumCard label="RAM Usage" value={formatStorage(met?.RAM?.used_gb)} color={C.purple} icon={<MemoryStick />} />
+                {(met?.GPU?.utilization > 0 || met?.GPU?.model !== "Unknown") && (
+                  <SumCard label="GPU Usage" value={`${met.GPU?.utilization?.toFixed(1) || 0}%`} color={C.teal} icon={<Activity />} />
+                )}
+                <SumCard label="Project Size" value={formatStorage(met?.["Project Storage"]?.gb)} color={C.green} icon={<HardDrive />} />
+                <SumCard label="Backend Size" value={formatStorage(met?.["Backend Storage"]?.gb)} color={C.muted} icon={<HardDrive />} />
+                <SumCard label="Frontend Size" value={formatStorage(met?.["Frontend Storage"]?.gb)} color={C.muted} icon={<HardDrive />} />
+                <SumCard label="Uploads Size" value={formatStorage(met?.["Uploads Storage"]?.gb)} color={C.yellow} icon={<HardDrive />} />
               </div>
             )}
           </div>
-        )}
+        </div>
+
+        {/* CENTER: HTTP Endpoint Monitoring & Deployment Information */}
+        <div style={{ display: "flex", flexDirection: "column", gap: 16 }}>
+          {/* HTTP Endpoint Monitoring */}
+          <div className="card" style={{ flex: 1 }}>
+            <SectionTitle icon={<Wifi />}>HTTP Endpoint Monitoring</SectionTitle>
+            {loading ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <Sk h={40} /><Sk h={40} />
+              </div>
+            ) : Object.keys(avail).length === 0 ? (
+              <div className="empty-state" style={{ padding: "16px 0" }}>
+                <div className="empty-state-icon"><WifiOff size={24} /></div>
+                <p>No endpoint data available</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 6, maxHeight: 180, overflowY: "auto", paddingRight: 4 }}>
+                {Object.entries(avail).map(([key, data]) => (
+                  <div key={key} style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "6px 10px", background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+                    <div>
+                      <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "var(--text-primary)" }}>{data.url || key}</div>
+                      <div style={{ fontSize: "0.65rem", color: "var(--text-muted)", marginTop: 1 }}>{data.last_checked ? new Date(data.last_checked).toLocaleTimeString() : "—"}</div>
+                    </div>
+                    <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+                      <div style={{ fontSize: "0.7rem", fontFamily: "monospace", color: data.response_time_ms > 500 ? C.yellow : "var(--text-muted)" }}>
+                        {data.response_time_ms != null ? `${data.response_time_ms} ms` : "—"}
+                      </div>
+                      <StatusBadge status={data.healthy ? "healthy" : "failed"} />
+                    </div>
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+
+          {/* Deployment Information */}
+          <div className="card" style={{ flex: 1 }}>
+            <SectionTitle icon={<Info />}>Deployment Information</SectionTitle>
+            {loading ? (
+              <div style={{ display: "flex", flexDirection: "column", gap: 12 }}>
+                <Sk h={20} /><Sk h={20} /><Sk h={20} />
+              </div>
+            ) : !snap.deployment || Object.keys(snap.deployment).length === 0 ? (
+              <div className="empty-state" style={{ padding: "16px 0" }}>
+                <div className="empty-state-icon"><Info size={24} /></div>
+                <p>No deployment info available</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8 }}>
+                {(() => {
+                  const git = snap.deployment.git || {};
+                  const deploymentFields = [
+                    { label: "Git Branch", value: git.branch },
+                    { label: "Commit ID", value: git.commit_sha ? git.commit_sha.substring(0, 7) : null, fullValue: git.commit_sha },
+                    { label: "Commit Message", value: git.last_commit_message },
+                    { label: "Commit Author", value: git.commit_author || git.author || "—" },
+                    { label: "Deployment Time", value: git.last_commit_time ? new Date(git.last_commit_time).toLocaleString() : null },
+                    { label: "Last Checked", value: git.last_checked ? new Date(git.last_checked).toLocaleString() : null }
+                  ];
+                  return deploymentFields.map(({ label, value, fullValue }) => (
+                    value ? (
+                      <div key={label} style={{ display: "flex", justifyContent: "space-between", padding: "6px 0", borderBottom: "1px dashed var(--border)" }}>
+                        <span style={{ fontSize: "0.72rem", color: "var(--text-muted)", textTransform: "capitalize" }}>{label.replace(/_/g, " ")}</span>
+                        <span
+                          style={{ fontSize: "0.72rem", fontWeight: 600, color: "var(--text-primary)", textAlign: "right", maxWidth: "60%", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+                          title={fullValue || value}
+                        >
+                          {value}
+                        </span>
+                      </div>
+                    ) : null
+                  ));
+                })()}
+              </div>
+            )}
+          </div>
+        </div>
+
+        {/* RIGHT: Active Alerts */}
+        <div style={{ display: "flex", flexDirection: "column" }}>
+          <div className="card" style={{ flex: 1 }}>
+            <SectionTitle icon={<Shield />}>Active Alerts</SectionTitle>
+            {loading ? <Sk w="100%" h={180} r={8} /> : alerts.length === 0 ? (
+              <div className="empty-state" style={{ padding: "24px 0" }}>
+                <div className="empty-state-icon"><CheckCircle size={28} color={C.green} /></div>
+                <h3 style={{ color: C.green }}>All clear</h3>
+                <p>No active alerts</p>
+              </div>
+            ) : (
+              <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 310, overflowY: "auto", paddingRight: 4 }}>
+                {alerts.map((a, i) => (
+                  <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 10px", background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
+                    <AlertTriangle size={13} color={a.severity === "critical" ? C.red : C.yellow} style={{ flexShrink: 0, marginTop: 2 }} />
+                    <div style={{ flex: 1, minWidth: 0 }}>
+                      <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "var(--text-primary)", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }} title={a.title || a.message}>{a.title || a.message}</div>
+                      {a.service && <div style={{ fontSize: "0.67rem", color: "var(--text-muted)", marginTop: 2 }}>{a.service}</div>}
+                    </div>
+                    <StatusBadge status={a.severity || "warning"} />
+                  </div>
+                ))}
+              </div>
+            )}
+          </div>
+        </div>
+
       </div>
 
       {/* ══════════════════════════════════════════════════════════════════ */}
@@ -495,7 +670,6 @@ const Dashboard = () => {
                 </thead>
                 <tbody>
                   {enrichedSvcs.map(svc => {
-                    const busy = busySvc[svc.name];
                     const isSnap = !!infra[svc.name];
                     return (
                       <tr key={svc.id}>
@@ -556,15 +730,11 @@ const Dashboard = () => {
                               <button
                                 key={op}
                                 className={`btn ${cls} btn-sm`}
-                                disabled={!!busy}
-                                onClick={() => runOp(svc.name, op)}
+                                onClick={() => handleOpClick(svc.name, op)}
                                 title={`${label} ${svc.name}`}
                                 style={{ minWidth: 28, padding: "4px 8px" }}
                               >
-                                {busy === op
-                                  ? <span className="spinner" style={{ width: 10, height: 10 }} />
-                                  : icon
-                                }
+                                {icon}
                                 <span style={{ fontSize: "0.7rem" }}>{label}</span>
                               </button>
                             ))}
@@ -583,7 +753,7 @@ const Dashboard = () => {
       {/* ══════════════════════════════════════════════════════════════════ */}
       {/* SECTION 5 & 6 — Charts + Audit History                          */}
       {/* ══════════════════════════════════════════════════════════════════ */}
-      <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr 1fr", gap: 16, marginBottom: 20 }}>
+      <div className="dashboard-grid-two-col">
 
         {/* Service Distribution Donut */}
         <div className="card">
@@ -644,31 +814,6 @@ const Dashboard = () => {
                 </Bar>
               </BarChart>
             </ResponsiveContainer>
-          )}
-        </div>
-
-        {/* Alerts panel */}
-        <div className="card">
-          <SectionTitle icon={<Shield />}>Active Alerts</SectionTitle>
-          {loading ? <Sk w="100%" h={180} r={8} /> : alerts.length === 0 ? (
-            <div className="empty-state" style={{ padding: "24px 0" }}>
-              <div className="empty-state-icon"><CheckCircle size={28} color={C.green} /></div>
-              <h3 style={{ color: C.green }}>All clear</h3>
-              <p>No active alerts</p>
-            </div>
-          ) : (
-            <div style={{ display: "flex", flexDirection: "column", gap: 8, maxHeight: 220, overflowY: "auto" }}>
-              {alerts.map((a, i) => (
-                <div key={i} style={{ display: "flex", alignItems: "flex-start", gap: 8, padding: "8px 10px", background: "var(--bg-surface)", borderRadius: "var(--radius-sm)", border: "1px solid var(--border)" }}>
-                  <AlertTriangle size={13} color={a.severity === "critical" ? C.red : C.yellow} style={{ flexShrink: 0, marginTop: 2 }} />
-                  <div>
-                    <div style={{ fontSize: "0.78rem", fontWeight: 600, color: "var(--text-primary)" }}>{a.title || a.message}</div>
-                    {a.service && <div style={{ fontSize: "0.67rem", color: "var(--text-muted)", marginTop: 2 }}>{a.service}</div>}
-                  </div>
-                  <StatusBadge status={a.severity || "warning"} />
-                </div>
-              ))}
-            </div>
           )}
         </div>
       </div>

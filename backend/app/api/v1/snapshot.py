@@ -22,11 +22,25 @@ def _merge_operations_into_snapshot(snapshot_data):
         # Override or sync the latest audit record
         agent_audit = snapshot_data.get("latest_audit_record")
         if agent_audit:
-            # If the agent reports a new status for our current pending record, update backend status
-            if latest_record["status"] == "pending" and agent_audit.get("service") == latest_record["service"] and agent_audit.get("operation") == latest_record["operation"]:
-                agent_status = agent_audit.get("status")
-                if agent_status in ["success", "failed"]:
-                    latest_record["status"] = agent_status
+            # The agent might send 'id' or just service/operation
+            op_id = agent_audit.get("id")
+            if op_id and op_id in _AUDIT_RECORDS:
+                if _AUDIT_RECORDS[op_id]["status"] in ["pending", "running"]:
+                    new_status = agent_audit.get("status")
+                    if new_status in ["success", "failed", "running"]:
+                        _AUDIT_RECORDS[op_id]["status"] = new_status
+                        if new_status in ["success", "failed"]:
+                            _AUDIT_RECORDS[op_id]["finished_at"] = datetime.now(timezone.utc)
+            else:
+                # Fallback if no ID is provided, try to match by service and operation
+                for rec in _AUDIT_RECORDS.values():
+                    if rec["status"] in ["pending", "running"] and agent_audit.get("service") == rec["service"] and agent_audit.get("operation") == rec["operation"]:
+                        new_status = agent_audit.get("status")
+                        if new_status in ["success", "failed", "running"]:
+                            rec["status"] = new_status
+                            if new_status in ["success", "failed"]:
+                                rec["finished_at"] = datetime.now(timezone.utc)
+                        break
                     
         # Update snapshot to reflect the actual latest backend record state
         snapshot_data["latest_audit_record"] = {

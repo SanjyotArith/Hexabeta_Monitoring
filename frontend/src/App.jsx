@@ -10,6 +10,7 @@ import Register from "./pages/Register";
 import Dashboard from "./pages/Dashboard";
 import LogsPage from "./pages/LogsPage";
 import Settings from "./pages/Settings";
+import ApiMonitorPage from "./pages/ApiMonitorPage";
 
 const App = () => (
   <ThemeProvider>
@@ -32,6 +33,7 @@ const App = () => (
                     <Routes>
                       <Route path="/"        element={<Dashboard />} />
                       <Route path="/logs"    element={<LogsPage />} />
+                      <Route path="/api-monitor" element={<ApiMonitorPage />} />
                       <Route path="/settings" element={<Settings />} />
                     </Routes>
                   </main>

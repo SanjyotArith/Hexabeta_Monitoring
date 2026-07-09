@@ -19,6 +19,7 @@ const Sidebar = () => {
   const menuItems = [
     { name: "Dashboard", path: "/",      icon: <LayoutDashboard size={16} />, end: true },
     { name: "Logs",      path: "/logs",  icon: <FileText size={16} /> },
+    { name: "API Monitor", path: "/api-monitor", icon: <Activity size={16} /> },
     { name: "Settings",  path: "/settings", icon: <Settings size={16} /> },
   ];
 

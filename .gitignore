@@ -51,3 +51,4 @@ Icon
 .vscode/
 *.swp
 *.swo
+backend/logs_payload_debug.json
