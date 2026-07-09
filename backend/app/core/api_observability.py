@@ -60,12 +60,20 @@ class ApiObservabilityReader:
         conn.row_factory = sqlite3.Row
         return conn
 
+    @staticmethod
+    def _nk(route: str, method: str) -> tuple:
+        """Normalize a (route, method) key — strip whitespace, uppercase method."""
+        return (route.strip(), method.strip().upper())
+
     def get_metrics(self) -> dict[str, Any]:
         """
         Aggregate metrics from the backend's SQLite database (read-only).
 
         Uses efficient GROUP BY SQL queries — no N+1 patterns.
         Scales to 500+, 1000+, 5000+ endpoints.
+
+        Merge uses a dict keyed by normalized (route, method) to guarantee
+        exactly ONE object per endpoint — duplicates are structurally impossible.
         """
         now = datetime.now(timezone.utc)
         ten_sec_ago = (now - timedelta(seconds=10)).isoformat()
@@ -121,11 +129,16 @@ class ApiObservabilityReader:
 
                 # ==========================================================
                 # STEP 1: Load endpoint_registry (one query)
+                # Normalize keys to prevent invisible-char duplicates.
                 # ==========================================================
                 cursor = conn.execute("SELECT route, method FROM endpoint_registry")
-                registered = set()
+                registered: set = set()
+                # Map normalized key -> original (route, method) for display
+                display_key: Dict[tuple, tuple] = {}
                 for r in cursor.fetchall():
-                    registered.add((r["route"], r["method"]))
+                    nk = self._nk(r["route"], r["method"])
+                    registered.add(nk)
+                    display_key[nk] = (r["route"], r["method"])
 
                 # ==========================================================
                 # STEP 2: Aggregated per-endpoint metrics (one GROUP BY query)
@@ -146,11 +159,13 @@ class ApiObservabilityReader:
                     GROUP BY route, method
                     """
                 )
-                # Map: (route, method) -> aggregated row dict
                 agg_map: Dict[tuple, Dict[str, Any]] = {}
                 for r in cursor.fetchall():
-                    key = (r["route"], r["method"])
-                    agg_map[key] = {
+                    nk = self._nk(r["route"], r["method"])
+                    # If this normalized key already exists (duplicate from DB),
+                    # merge by picking the one with more requests
+                    existing = agg_map.get(nk)
+                    new_data = {
                         "total_requests": r["total_requests"],
                         "avg_latency": round(r["avg_latency"] or 0.0, 2),
                         "min_latency": round(r["min_latency"] or 0.0, 2),
@@ -159,10 +174,30 @@ class ApiObservabilityReader:
                         "success_count": r["success_count"] or 0,
                         "failure_count": r["failure_count"] or 0,
                     }
+                    if existing:
+                        # Merge: combine counts, take best latency bounds
+                        existing["total_requests"] += new_data["total_requests"]
+                        existing["success_count"] += new_data["success_count"]
+                        existing["failure_count"] += new_data["failure_count"]
+                        total = existing["total_requests"]
+                        if total > 0:
+                            # Weighted avg latency
+                            existing["avg_latency"] = round(
+                                ((existing["avg_latency"] * (total - new_data["total_requests"])) +
+                                 (new_data["avg_latency"] * new_data["total_requests"])) / total, 2
+                            )
+                        existing["min_latency"] = round(min(existing["min_latency"], new_data["min_latency"]), 2)
+                        existing["max_latency"] = round(max(existing["max_latency"], new_data["max_latency"]), 2)
+                        if new_data["last_called"] and (not existing["last_called"] or new_data["last_called"] > existing["last_called"]):
+                            existing["last_called"] = new_data["last_called"]
+                    else:
+                        agg_map[nk] = new_data
+                    # Preserve display key from requests if not already set
+                    if nk not in display_key:
+                        display_key[nk] = (r["route"], r["method"])
 
                 # ==========================================================
                 # STEP 3: Per-endpoint last_status_code (one GROUP BY query)
-                # Uses a subquery to get status_code of the latest request.
                 # ==========================================================
                 cursor = conn.execute(
                     f"""
@@ -179,7 +214,8 @@ class ApiObservabilityReader:
                 )
                 last_status_map: Dict[tuple, int] = {}
                 for r in cursor.fetchall():
-                    last_status_map[(r["route"], r["method"])] = r["last_status_code"]
+                    nk = self._nk(r["route"], r["method"])
+                    last_status_map[nk] = r["last_status_code"]
 
                 # ==========================================================
                 # STEP 4: Per-endpoint RPS (one GROUP BY query, last 10s)
@@ -195,7 +231,8 @@ class ApiObservabilityReader:
                 )
                 rps_map: Dict[tuple, float] = {}
                 for r in cursor.fetchall():
-                    rps_map[(r["route"], r["method"])] = round(r["recent_count"] / 10.0, 2)
+                    nk = self._nk(r["route"], r["method"])
+                    rps_map[nk] = rps_map.get(nk, 0.0) + round(r["recent_count"] / 10.0, 2)
 
                 # ==========================================================
                 # STEP 5: Per-endpoint status code distribution (one GROUP BY)
@@ -211,17 +248,17 @@ class ApiObservabilityReader:
                     lambda: {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
                 )
                 for r in cursor.fetchall():
-                    key = (r["route"], r["method"])
+                    nk = self._nk(r["route"], r["method"])
                     sc = r["status_code"]
                     cnt = r["cnt"]
                     if 200 <= sc < 300:
-                        sc_map[key]["2xx"] += cnt
+                        sc_map[nk]["2xx"] += cnt
                     elif 300 <= sc < 400:
-                        sc_map[key]["3xx"] += cnt
+                        sc_map[nk]["3xx"] += cnt
                     elif 400 <= sc < 500:
-                        sc_map[key]["4xx"] += cnt
+                        sc_map[nk]["4xx"] += cnt
                     elif sc >= 500:
-                        sc_map[key]["5xx"] += cnt
+                        sc_map[nk]["5xx"] += cnt
 
                 # ==========================================================
                 # STEP 6: Per-endpoint p95/p99 — fetch sorted latencies per
@@ -236,11 +273,14 @@ class ApiObservabilityReader:
                 )
                 latency_groups: Dict[tuple, List[float]] = defaultdict(list)
                 for r in cursor.fetchall():
-                    latency_groups[(r["route"], r["method"])].append(r["processing_time"])
+                    nk = self._nk(r["route"], r["method"])
+                    latency_groups[nk].append(r["processing_time"])
 
                 p95_map: Dict[tuple, float] = {}
                 p99_map: Dict[tuple, float] = {}
                 for key, lats in latency_groups.items():
+                    # Re-sort after merge in case normalized keys combined groups
+                    lats.sort()
                     n = len(lats)
                     if n > 0:
                         p95_map[key] = round(lats[min(int(n * 0.95), n - 1)], 2)
@@ -256,7 +296,8 @@ class ApiObservabilityReader:
                         "FROM worker_endpoint_active GROUP BY route, method"
                     )
                     for r in cursor.fetchall():
-                        active_endpoint_map[(r["route"], r["method"])] = max(0, r["active"])
+                        nk = self._nk(r["route"], r["method"])
+                        active_endpoint_map[nk] = max(0, active_endpoint_map.get(nk, 0) + (r["active"] or 0))
 
                 # ==========================================================
                 # STEP 8: Failures — aggregated per endpoint (one GROUP BY)
@@ -271,10 +312,17 @@ class ApiObservabilityReader:
                 )
                 fail_agg_map: Dict[tuple, Dict[str, Any]] = {}
                 for r in cursor.fetchall():
-                    fail_agg_map[(r["route"], r["method"])] = {
-                        "fail_count": r["fail_count"],
-                        "last_failure_time": r["last_failure_time"],
-                    }
+                    nk = self._nk(r["route"], r["method"])
+                    existing = fail_agg_map.get(nk)
+                    if existing:
+                        existing["fail_count"] += r["fail_count"]
+                        if r["last_failure_time"] and (not existing["last_failure_time"] or r["last_failure_time"] > existing["last_failure_time"]):
+                            existing["last_failure_time"] = r["last_failure_time"]
+                    else:
+                        fail_agg_map[nk] = {
+                            "fail_count": r["fail_count"],
+                            "last_failure_time": r["last_failure_time"],
+                        }
 
                 # Latest failure details per endpoint (one query with window)
                 cursor = conn.execute(
@@ -294,8 +342,8 @@ class ApiObservabilityReader:
                 )
                 fail_latest_map: Dict[tuple, Dict[str, Any]] = {}
                 for r in cursor.fetchall():
-                    key = (r["route"], r["method"])
-                    fail_latest_map[key] = {
+                    nk = self._nk(r["route"], r["method"])
+                    new_fail = {
                         "timestamp": r["timestamp"],
                         "status_code": r["status_code"],
                         "exception_type": r["exception_type"],
@@ -304,6 +352,9 @@ class ApiObservabilityReader:
                         "stack_trace": r["stack_trace"],
                         "worker_pid": r["worker_pid"],
                     }
+                    existing = fail_latest_map.get(nk)
+                    if not existing or (new_fail["timestamp"] and (not existing["timestamp"] or new_fail["timestamp"] > existing["timestamp"])):
+                        fail_latest_map[nk] = new_fail
 
                 # Most common failure reason per endpoint (one GROUP BY)
                 cursor = conn.execute(
@@ -317,10 +368,10 @@ class ApiObservabilityReader:
                 )
                 most_common_failure_map: Dict[tuple, str] = {}
                 for r in cursor.fetchall():
-                    key = (r["route"], r["method"])
-                    # First row per (route, method) is the most common (ORDER BY DESC)
-                    if key not in most_common_failure_map:
-                        most_common_failure_map[key] = r["failure_reason"]
+                    nk = self._nk(r["route"], r["method"])
+                    # First row per normalized key is the most common (ORDER BY DESC)
+                    if nk not in most_common_failure_map:
+                        most_common_failure_map[nk] = r["failure_reason"]
 
                 # ==========================================================
                 # STEP 9: Global summary (one query)
@@ -395,13 +446,27 @@ class ApiObservabilityReader:
                     summary["active_requests"] = sum(active_endpoint_map.values())
 
                 # ==========================================================
-                # STEP 10: Merge — build per-endpoint response
+                # STEP 10: Dict-based merge — guarantees uniqueness
+                #
+                # endpoint_map is keyed by normalized (route, method).
+                # Duplicates are STRUCTURALLY IMPOSSIBLE.
+                #
+                # 1. Seed with all registered endpoints (zero-traffic defaults)
+                # 2. Overlay aggregated metrics on top
                 # ==========================================================
-                all_endpoint_keys = registered | set(agg_map.keys())
+                endpoint_map: Dict[tuple, Dict[str, Any]] = {}
 
-                for route, method in all_endpoint_keys:
-                    agg = agg_map.get((route, method))
-                    key = (route, method)
+                # Collect all normalized keys from both sources
+                all_nkeys = registered | set(agg_map.keys())
+
+                registered_count = len(registered)
+                aggregated_count = len(agg_map)
+
+                for nk in all_nkeys:
+                    agg = agg_map.get(nk)
+                    # Use display_key for original route/method string
+                    disp = display_key.get(nk, nk)
+                    route_str, method_str = disp
 
                     if agg:
                         total_reqs = agg["total_requests"]
@@ -411,7 +476,7 @@ class ApiObservabilityReader:
                         min_l = agg["min_latency"]
                         max_l = agg["max_latency"]
                         last_called = agg["last_called"]
-                        last_status = last_status_map.get(key)
+                        last_status = last_status_map.get(nk)
                     else:
                         # Endpoint registered but no traffic
                         total_reqs = 0
@@ -423,10 +488,10 @@ class ApiObservabilityReader:
                         last_called = None
                         last_status = None
 
-                    active = active_endpoint_map.get(key, 0)
-                    ept_rps = rps_map.get(key, 0.0)
-                    p95_l = p95_map.get(key, 0.0)
-                    p99_l = p99_map.get(key, 0.0)
+                    active = active_endpoint_map.get(nk, 0)
+                    ept_rps = rps_map.get(nk, 0.0)
+                    p95_l = p95_map.get(nk, 0.0)
+                    p99_l = p99_map.get(nk, 0.0)
 
                     # Success/failure rates
                     success_rate = 100.0
@@ -446,8 +511,8 @@ class ApiObservabilityReader:
                         health_status = "healthy"
 
                     # Failure information from pre-aggregated maps
-                    fail_agg = fail_agg_map.get(key)
-                    fail_latest = fail_latest_map.get(key)
+                    fail_agg = fail_agg_map.get(nk)
+                    fail_latest = fail_latest_map.get(nk)
                     latest_exception = None
                     latest_error_message = None
                     latest_fail_info = None
@@ -470,17 +535,17 @@ class ApiObservabilityReader:
                         failure_history = {
                             "last_failure_time": fail_agg["last_failure_time"],
                             "failure_count": fail_agg["fail_count"],
-                            "most_common_failure": most_common_failure_map.get(key),
+                            "most_common_failure": most_common_failure_map.get(nk),
                             "latest_exception": latest_exception,
                             "latest_error_message": latest_error_message,
                         }
 
                     # Status code distribution from pre-aggregated map
-                    route_sc = sc_map.get(key, {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0})
+                    route_sc = sc_map.get(nk, {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0})
 
-                    endpoints.append({
-                        "route": route,
-                        "method": method,
+                    endpoint_map[nk] = {
+                        "route": route_str,
+                        "method": method_str,
                         "total_requests": total_reqs,
                         "requests_per_second": ept_rps,
                         "active_requests": active,
@@ -501,7 +566,39 @@ class ApiObservabilityReader:
                         "latest_error_message": latest_error_message,
                         "failure_history": failure_history,
                         "status_codes": route_sc,
-                    })
+                    }
+
+                # Convert dict values to list — uniqueness guaranteed by dict keys
+                endpoints = list(endpoint_map.values())
+                final_count = len(endpoints)
+
+                # Verification logging
+                logger.info(
+                    "API Observability Merge — Registered endpoints: %d | "
+                    "Aggregated endpoints: %d | Final unique endpoints: %d",
+                    registered_count, aggregated_count, final_count,
+                )
+
+                # Duplicate detection (should never trigger)
+                seen_keys = set()
+                duplicates = []
+                for ep in endpoints:
+                    ek = (ep["route"], ep["method"])
+                    if ek in seen_keys:
+                        duplicates.append(ek)
+                    seen_keys.add(ek)
+
+                if duplicates:
+                    for dup_route, dup_method in duplicates:
+                        logger.error(
+                            "DUPLICATE ENDPOINT DETECTED: %s %s — this should never happen",
+                            dup_method, dup_route,
+                        )
+                else:
+                    logger.debug(
+                        "Endpoint uniqueness verified — %d endpoints, 0 duplicates",
+                        final_count,
+                    )
 
                 # ==========================================================
                 # Slow endpoints (one query, LIMIT 10)
