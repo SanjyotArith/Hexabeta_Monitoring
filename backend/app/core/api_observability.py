@@ -10,12 +10,19 @@ produced by HexaBeta Backend and stored at:
 This module aggregates endpoint_registry, request_metrics, failures,
 dependency_metrics, uploads, authentication, and worker_statistics
 into the snapshot format consumed by HexaMonitor.
+
+Performance Design:
+    - ONE query to load endpoint_registry
+    - ONE aggregated GROUP BY query over requests for per-endpoint metrics
+    - ONE aggregated GROUP BY query over requests for per-endpoint RPS
+    - ONE aggregated GROUP BY query over requests for per-endpoint status codes
+    - ONE aggregated GROUP BY query over failures for per-endpoint failure info
+    - Merge results in memory — NO N+1 query patterns
 """
 
 from __future__ import annotations
 
 import logging
-import os
 import sqlite3
 from collections import defaultdict
 from datetime import datetime, timezone, timedelta
@@ -32,7 +39,8 @@ class ApiObservabilityReader:
     Read-only consumer of the HexaBeta Backend API observability database.
 
     Opens the backend's api_observability.db in read-only mode and
-    aggregates data for the HexaAgent snapshot endpoint.
+    aggregates data for the HexaAgent snapshot endpoint using efficient
+    SQL GROUP BY queries. No N+1 patterns.
     """
 
     def __init__(self) -> None:
@@ -53,7 +61,12 @@ class ApiObservabilityReader:
         return conn
 
     def get_metrics(self) -> dict[str, Any]:
-        """Aggregate metrics from the backend's SQLite database (read-only)."""
+        """
+        Aggregate metrics from the backend's SQLite database (read-only).
+
+        Uses efficient GROUP BY SQL queries — no N+1 patterns.
+        Scales to 500+, 1000+, 5000+ endpoints.
+        """
         now = datetime.now(timezone.utc)
         ten_sec_ago = (now - timedelta(seconds=10)).isoformat()
 
@@ -104,51 +117,224 @@ class ApiObservabilityReader:
 
         try:
             with self._open_readonly() as conn:
-                # 1. Fetch all discovered routes from endpoint_registry
+                req_table = self._detect_table(conn, "request_metrics", "requests")
+
+                # ==========================================================
+                # STEP 1: Load endpoint_registry (one query)
+                # ==========================================================
                 cursor = conn.execute("SELECT route, method FROM endpoint_registry")
-                registered = [(r["route"], r["method"]) for r in cursor.fetchall()]
+                registered = set()
+                for r in cursor.fetchall():
+                    registered.add((r["route"], r["method"]))
 
-                # 2. Fetch all requests (request_metrics table — fallback to 'requests')
-                requests_table = self._detect_table(conn, "request_metrics", "requests")
-                cursor = conn.execute(
-                    f"SELECT route, method, status_code, processing_time, timestamp FROM {requests_table}"
-                )
-                raw_reqs = cursor.fetchall()
-
-                # 3. Fetch active requests per endpoint
-                if self._table_exists(conn, "worker_endpoint_active"):
-                    cursor = conn.execute(
-                        "SELECT route, method, sum(active_requests) as active "
-                        "FROM worker_endpoint_active GROUP BY route, method"
-                    )
-                    active_endpoint_map = {
-                        (r["route"], r["method"]): max(0, r["active"])
-                        for r in cursor.fetchall()
-                    }
-                else:
-                    active_endpoint_map = {}
-
-                # 4. Fetch failures
-                cursor = conn.execute(
-                    """
-                    SELECT route, method, timestamp, status_code, exception_type,
-                           exception_message, failure_reason, stack_trace, worker_pid
-                    FROM failures
-                    """
-                )
-                failures_raw = cursor.fetchall()
-
-                # Global summary metrics
+                # ==========================================================
+                # STEP 2: Aggregated per-endpoint metrics (one GROUP BY query)
+                # ==========================================================
                 cursor = conn.execute(
                     f"""
                     SELECT
-                        count(*) as total,
-                        sum(case when status_code >= 200 and status_code < 400 then 1 else 0 end) as success,
-                        sum(case when status_code >= 400 or exception_type is not null then 1 else 0 end) as failure,
-                        avg(processing_time) as avg_lat,
-                        min(processing_time) as min_lat,
-                        max(processing_time) as max_lat
-                    FROM {requests_table}
+                        route,
+                        method,
+                        COUNT(*)                                                          AS total_requests,
+                        AVG(processing_time)                                              AS avg_latency,
+                        MIN(processing_time)                                              AS min_latency,
+                        MAX(processing_time)                                              AS max_latency,
+                        MAX(timestamp)                                                    AS last_called,
+                        SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END) AS success_count,
+                        SUM(CASE WHEN status_code >= 400 THEN 1 ELSE 0 END)               AS failure_count
+                    FROM {req_table}
+                    GROUP BY route, method
+                    """
+                )
+                # Map: (route, method) -> aggregated row dict
+                agg_map: Dict[tuple, Dict[str, Any]] = {}
+                for r in cursor.fetchall():
+                    key = (r["route"], r["method"])
+                    agg_map[key] = {
+                        "total_requests": r["total_requests"],
+                        "avg_latency": round(r["avg_latency"] or 0.0, 2),
+                        "min_latency": round(r["min_latency"] or 0.0, 2),
+                        "max_latency": round(r["max_latency"] or 0.0, 2),
+                        "last_called": r["last_called"],
+                        "success_count": r["success_count"] or 0,
+                        "failure_count": r["failure_count"] or 0,
+                    }
+
+                # ==========================================================
+                # STEP 3: Per-endpoint last_status_code (one GROUP BY query)
+                # Uses a subquery to get status_code of the latest request.
+                # ==========================================================
+                cursor = conn.execute(
+                    f"""
+                    SELECT r.route, r.method, r.status_code AS last_status_code
+                    FROM {req_table} r
+                    INNER JOIN (
+                        SELECT route, method, MAX(timestamp) AS max_ts
+                        FROM {req_table}
+                        GROUP BY route, method
+                    ) latest ON r.route = latest.route
+                              AND r.method = latest.method
+                              AND r.timestamp = latest.max_ts
+                    """
+                )
+                last_status_map: Dict[tuple, int] = {}
+                for r in cursor.fetchall():
+                    last_status_map[(r["route"], r["method"])] = r["last_status_code"]
+
+                # ==========================================================
+                # STEP 4: Per-endpoint RPS (one GROUP BY query, last 10s)
+                # ==========================================================
+                cursor = conn.execute(
+                    f"""
+                    SELECT route, method, COUNT(*) AS recent_count
+                    FROM {req_table}
+                    WHERE timestamp >= ?
+                    GROUP BY route, method
+                    """,
+                    (ten_sec_ago,),
+                )
+                rps_map: Dict[tuple, float] = {}
+                for r in cursor.fetchall():
+                    rps_map[(r["route"], r["method"])] = round(r["recent_count"] / 10.0, 2)
+
+                # ==========================================================
+                # STEP 5: Per-endpoint status code distribution (one GROUP BY)
+                # ==========================================================
+                cursor = conn.execute(
+                    f"""
+                    SELECT route, method, status_code, COUNT(*) AS cnt
+                    FROM {req_table}
+                    GROUP BY route, method, status_code
+                    """
+                )
+                sc_map: Dict[tuple, Dict[str, int]] = defaultdict(
+                    lambda: {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
+                )
+                for r in cursor.fetchall():
+                    key = (r["route"], r["method"])
+                    sc = r["status_code"]
+                    cnt = r["cnt"]
+                    if 200 <= sc < 300:
+                        sc_map[key]["2xx"] += cnt
+                    elif 300 <= sc < 400:
+                        sc_map[key]["3xx"] += cnt
+                    elif 400 <= sc < 500:
+                        sc_map[key]["4xx"] += cnt
+                    elif sc >= 500:
+                        sc_map[key]["5xx"] += cnt
+
+                # ==========================================================
+                # STEP 6: Per-endpoint p95/p99 — fetch sorted latencies per
+                # endpoint in ONE query, compute percentiles in memory
+                # ==========================================================
+                cursor = conn.execute(
+                    f"""
+                    SELECT route, method, processing_time
+                    FROM {req_table}
+                    ORDER BY route, method, processing_time ASC
+                    """
+                )
+                latency_groups: Dict[tuple, List[float]] = defaultdict(list)
+                for r in cursor.fetchall():
+                    latency_groups[(r["route"], r["method"])].append(r["processing_time"])
+
+                p95_map: Dict[tuple, float] = {}
+                p99_map: Dict[tuple, float] = {}
+                for key, lats in latency_groups.items():
+                    n = len(lats)
+                    if n > 0:
+                        p95_map[key] = round(lats[min(int(n * 0.95), n - 1)], 2)
+                        p99_map[key] = round(lats[min(int(n * 0.99), n - 1)], 2)
+
+                # ==========================================================
+                # STEP 7: Active requests per endpoint (one GROUP BY query)
+                # ==========================================================
+                active_endpoint_map: Dict[tuple, int] = {}
+                if self._table_exists(conn, "worker_endpoint_active"):
+                    cursor = conn.execute(
+                        "SELECT route, method, SUM(active_requests) AS active "
+                        "FROM worker_endpoint_active GROUP BY route, method"
+                    )
+                    for r in cursor.fetchall():
+                        active_endpoint_map[(r["route"], r["method"])] = max(0, r["active"])
+
+                # ==========================================================
+                # STEP 8: Failures — aggregated per endpoint (one GROUP BY)
+                # ==========================================================
+                cursor = conn.execute(
+                    """
+                    SELECT route, method, COUNT(*) AS fail_count,
+                           MAX(timestamp) AS last_failure_time
+                    FROM failures
+                    GROUP BY route, method
+                    """
+                )
+                fail_agg_map: Dict[tuple, Dict[str, Any]] = {}
+                for r in cursor.fetchall():
+                    fail_agg_map[(r["route"], r["method"])] = {
+                        "fail_count": r["fail_count"],
+                        "last_failure_time": r["last_failure_time"],
+                    }
+
+                # Latest failure details per endpoint (one query with window)
+                cursor = conn.execute(
+                    """
+                    SELECT f.route, f.method, f.timestamp, f.status_code,
+                           f.exception_type, f.exception_message,
+                           f.failure_reason, f.stack_trace, f.worker_pid
+                    FROM failures f
+                    INNER JOIN (
+                        SELECT route, method, MAX(timestamp) AS max_ts
+                        FROM failures
+                        GROUP BY route, method
+                    ) latest ON f.route = latest.route
+                              AND f.method = latest.method
+                              AND f.timestamp = latest.max_ts
+                    """
+                )
+                fail_latest_map: Dict[tuple, Dict[str, Any]] = {}
+                for r in cursor.fetchall():
+                    key = (r["route"], r["method"])
+                    fail_latest_map[key] = {
+                        "timestamp": r["timestamp"],
+                        "status_code": r["status_code"],
+                        "exception_type": r["exception_type"],
+                        "exception_message": r["exception_message"],
+                        "failure_reason": r["failure_reason"],
+                        "stack_trace": r["stack_trace"],
+                        "worker_pid": r["worker_pid"],
+                    }
+
+                # Most common failure reason per endpoint (one GROUP BY)
+                cursor = conn.execute(
+                    """
+                    SELECT route, method, failure_reason, COUNT(*) AS reason_count
+                    FROM failures
+                    WHERE failure_reason IS NOT NULL
+                    GROUP BY route, method, failure_reason
+                    ORDER BY route, method, reason_count DESC
+                    """
+                )
+                most_common_failure_map: Dict[tuple, str] = {}
+                for r in cursor.fetchall():
+                    key = (r["route"], r["method"])
+                    # First row per (route, method) is the most common (ORDER BY DESC)
+                    if key not in most_common_failure_map:
+                        most_common_failure_map[key] = r["failure_reason"]
+
+                # ==========================================================
+                # STEP 9: Global summary (one query)
+                # ==========================================================
+                cursor = conn.execute(
+                    f"""
+                    SELECT
+                        COUNT(*)                                                          AS total,
+                        SUM(CASE WHEN status_code >= 200 AND status_code < 400 THEN 1 ELSE 0 END) AS success,
+                        SUM(CASE WHEN status_code >= 400 OR exception_type IS NOT NULL THEN 1 ELSE 0 END) AS failure,
+                        AVG(processing_time)                                              AS avg_lat,
+                        MIN(processing_time)                                              AS min_lat,
+                        MAX(processing_time)                                              AS max_lat
+                    FROM {req_table}
                     """
                 )
                 row = cursor.fetchone()
@@ -160,18 +346,19 @@ class ApiObservabilityReader:
                     summary["min_latency"] = round(row["min_lat"] or 0.0, 2)
                     summary["max_latency"] = round(row["max_lat"] or 0.0, 2)
 
+                # Global p95/p99
                 cursor = conn.execute(
-                    f"SELECT processing_time FROM {requests_table} ORDER BY processing_time ASC"
+                    f"SELECT processing_time FROM {req_table} ORDER BY processing_time ASC"
                 )
-                latencies = [r["processing_time"] for r in cursor.fetchall()]
-                if latencies:
-                    n = len(latencies)
-                    summary["p95_latency"] = round(latencies[int(n * 0.95)], 2)
-                    summary["p99_latency"] = round(latencies[int(n * 0.99)], 2)
+                all_latencies = [r["processing_time"] for r in cursor.fetchall()]
+                if all_latencies:
+                    n = len(all_latencies)
+                    summary["p95_latency"] = round(all_latencies[min(int(n * 0.95), n - 1)], 2)
+                    summary["p99_latency"] = round(all_latencies[min(int(n * 0.99), n - 1)], 2)
 
-                # Status Codes
+                # Global status codes (one query)
                 cursor = conn.execute(
-                    f"SELECT status_code, count(*) as cnt FROM {requests_table} GROUP BY status_code"
+                    f"SELECT status_code, COUNT(*) AS cnt FROM {req_table} GROUP BY status_code"
                 )
                 for r in cursor.fetchall():
                     sc = r["status_code"]
@@ -182,12 +369,12 @@ class ApiObservabilityReader:
                         status_codes["3xx"] += cnt
                     elif 400 <= sc < 500:
                         status_codes["4xx"] += cnt
-                    elif 500 <= sc:
+                    elif sc >= 500:
                         status_codes["5xx"] += cnt
 
-                # RPS
+                # Global RPS
                 cursor = conn.execute(
-                    f"SELECT count(*) as cnt FROM {requests_table} WHERE timestamp >= ?",
+                    f"SELECT COUNT(*) AS cnt FROM {req_table} WHERE timestamp >= ?",
                     (ten_sec_ago,),
                 )
                 ten_sec_count = cursor.fetchone()["cnt"]
@@ -200,107 +387,96 @@ class ApiObservabilityReader:
                 # Active requests from worker_stats
                 if self._table_exists(conn, "worker_stats"):
                     cursor = conn.execute(
-                        "SELECT sum(active_requests) as active FROM worker_stats"
+                        "SELECT SUM(active_requests) AS active FROM worker_stats"
                     )
-                    row = cursor.fetchone()
-                    summary["active_requests"] = (row["active"] or 0) if row else 0
+                    r = cursor.fetchone()
+                    summary["active_requests"] = (r["active"] or 0) if r else 0
                 else:
-                    # Fallback: sum from worker_endpoint_active
                     summary["active_requests"] = sum(active_endpoint_map.values())
 
-                # Grouping requests & failures in Python
-                req_groups: Dict[tuple, list] = defaultdict(list)
-                for r in raw_reqs:
-                    req_groups[(r["route"], r["method"])].append(r)
+                # ==========================================================
+                # STEP 10: Merge — build per-endpoint response
+                # ==========================================================
+                all_endpoint_keys = registered | set(agg_map.keys())
 
-                fail_groups: Dict[tuple, list] = defaultdict(list)
-                for f in failures_raw:
-                    fail_groups[(f["route"], f["method"])].append(f)
+                for route, method in all_endpoint_keys:
+                    agg = agg_map.get((route, method))
+                    key = (route, method)
 
-                # Per-endpoint calculations
-                all_endpoints = set(registered) | set(req_groups.keys())
-                for route, method in all_endpoints:
-                    reqs = req_groups[(route, method)]
-                    fails = fail_groups[(route, method)]
+                    if agg:
+                        total_reqs = agg["total_requests"]
+                        success_cnt = agg["success_count"]
+                        failure_cnt = agg["failure_count"]
+                        avg_l = agg["avg_latency"]
+                        min_l = agg["min_latency"]
+                        max_l = agg["max_latency"]
+                        last_called = agg["last_called"]
+                        last_status = last_status_map.get(key)
+                    else:
+                        # Endpoint registered but no traffic
+                        total_reqs = 0
+                        success_cnt = 0
+                        failure_cnt = 0
+                        avg_l = 0.0
+                        min_l = 0.0
+                        max_l = 0.0
+                        last_called = None
+                        last_status = None
 
-                    total_reqs = len(reqs)
-                    active = active_endpoint_map.get((route, method), 0)
+                    active = active_endpoint_map.get(key, 0)
+                    ept_rps = rps_map.get(key, 0.0)
+                    p95_l = p95_map.get(key, 0.0)
+                    p99_l = p99_map.get(key, 0.0)
 
-                    # Compute per-endpoint RPS
-                    ept_ten_sec = sum(1 for r in reqs if r["timestamp"] >= ten_sec_ago)
-                    ept_rps = round(ept_ten_sec / 10.0, 2)
-
-                    success_cnt = sum(1 for r in reqs if 200 <= r["status_code"] < 400)
-                    failure_cnt = total_reqs - success_cnt
-
+                    # Success/failure rates
                     success_rate = 100.0
                     failure_rate = 0.0
                     if total_reqs > 0:
                         success_rate = round((success_cnt / total_reqs) * 100, 2)
                         failure_rate = round((failure_cnt / total_reqs) * 100, 2)
 
-                    avg_l = min_l = max_l = p95_l = p99_l = 0.0
-                    last_called = None
-                    last_status = None
-
-                    if total_reqs > 0:
-                        lats = sorted([r["processing_time"] for r in reqs])
-                        avg_l = round(sum(lats) / total_reqs, 2)
-                        min_l = round(lats[0], 2)
-                        max_l = round(lats[-1], 2)
-                        p95_l = round(lats[int(total_reqs * 0.95)], 2)
-                        p99_l = round(lats[int(total_reqs * 0.99)], 2)
-
-                        sorted_reqs = sorted(reqs, key=lambda x: x["timestamp"], reverse=True)
-                        last_called = sorted_reqs[0]["timestamp"]
-                        last_status = sorted_reqs[0]["status_code"]
-
-                    # Health Status logic
-                    health_status = "healthy"
-                    if failure_rate > 10.0 or avg_l > 3000:
+                    # Health Status
+                    if total_reqs == 0:
+                        health_status = "no_traffic"
+                    elif failure_rate > 10.0 or avg_l > 3000:
                         health_status = "critical"
                     elif failure_rate > 2.0 or avg_l > 1000 or p95_l > 2000:
                         health_status = "warning"
+                    else:
+                        health_status = "healthy"
 
-                    # Failure History
-                    last_failure_time = None
-                    most_common_failure = None
+                    # Failure information from pre-aggregated maps
+                    fail_agg = fail_agg_map.get(key)
+                    fail_latest = fail_latest_map.get(key)
                     latest_exception = None
                     latest_error_message = None
                     latest_fail_info = None
+                    failure_history = None
 
-                    if fails:
-                        sorted_fails = sorted(fails, key=lambda x: x["timestamp"], reverse=True)
-                        last_failure_time = sorted_fails[0]["timestamp"]
-                        latest_exception = sorted_fails[0]["exception_type"]
-                        latest_error_message = sorted_fails[0]["exception_message"]
-
-                        reasons = [f["failure_reason"] for f in fails if f["failure_reason"]]
-                        if reasons:
-                            most_common_failure = max(set(reasons), key=reasons.count)
+                    if fail_agg and fail_latest:
+                        latest_exception = fail_latest["exception_type"]
+                        latest_error_message = fail_latest["exception_message"]
 
                         latest_fail_info = {
-                            "timestamp": last_failure_time,
-                            "status_code": sorted_fails[0]["status_code"],
+                            "timestamp": fail_latest["timestamp"],
+                            "status_code": fail_latest["status_code"],
                             "exception_type": latest_exception,
                             "exception_message": latest_error_message,
-                            "failure_reason": sorted_fails[0]["failure_reason"],
-                            "stack_trace": sorted_fails[0]["stack_trace"],
-                            "worker_pid": sorted_fails[0]["worker_pid"],
+                            "failure_reason": fail_latest["failure_reason"],
+                            "stack_trace": fail_latest["stack_trace"],
+                            "worker_pid": fail_latest["worker_pid"],
                         }
 
-                    # Route status code distribution
-                    route_sc = {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0}
-                    for r in reqs:
-                        sc = r["status_code"]
-                        if 200 <= sc < 300:
-                            route_sc["2xx"] += 1
-                        elif 300 <= sc < 400:
-                            route_sc["3xx"] += 1
-                        elif 400 <= sc < 500:
-                            route_sc["4xx"] += 1
-                        elif 500 <= sc:
-                            route_sc["5xx"] += 1
+                        failure_history = {
+                            "last_failure_time": fail_agg["last_failure_time"],
+                            "failure_count": fail_agg["fail_count"],
+                            "most_common_failure": most_common_failure_map.get(key),
+                            "latest_exception": latest_exception,
+                            "latest_error_message": latest_error_message,
+                        }
+
+                    # Status code distribution from pre-aggregated map
+                    route_sc = sc_map.get(key, {"2xx": 0, "3xx": 0, "4xx": 0, "5xx": 0})
 
                     endpoints.append({
                         "route": route,
@@ -323,21 +499,17 @@ class ApiObservabilityReader:
                         "latest_failure_information": latest_fail_info,
                         "latest_exception": latest_exception,
                         "latest_error_message": latest_error_message,
-                        "failure_history": {
-                            "last_failure_time": last_failure_time,
-                            "failure_count": len(fails),
-                            "most_common_failure": most_common_failure,
-                            "latest_exception": latest_exception,
-                            "latest_error_message": latest_error_message,
-                        } if fails else None,
+                        "failure_history": failure_history,
                         "status_codes": route_sc,
                     })
 
-                # Slow endpoints (latency >= 500ms)
+                # ==========================================================
+                # Slow endpoints (one query, LIMIT 10)
+                # ==========================================================
                 cursor = conn.execute(
                     f"""
                     SELECT route, method, processing_time, timestamp, status_code
-                    FROM {requests_table}
+                    FROM {req_table}
                     WHERE processing_time >= 500
                     ORDER BY processing_time DESC
                     LIMIT 10
@@ -354,11 +526,14 @@ class ApiObservabilityReader:
                         "severity": "Critical" if lat >= 3000 else "High" if lat >= 1000 else "Warning",
                     })
 
-                # Exception Analytics
+                # ==========================================================
+                # Exception Analytics (one GROUP BY query)
+                # ==========================================================
                 cursor = conn.execute(
                     f"""
-                    SELECT exception_type, route, method, count(*) as cnt, max(timestamp) as latest
-                    FROM {requests_table}
+                    SELECT exception_type, route, method,
+                           COUNT(*) AS cnt, MAX(timestamp) AS latest
+                    FROM {req_table}
                     WHERE exception_type IS NOT NULL
                     GROUP BY exception_type, route, method
                     """
@@ -372,16 +547,19 @@ class ApiObservabilityReader:
                         "latest_occurrence": r["latest"],
                     })
 
-                # Dependency Monitoring
+                # ==========================================================
+                # Dependency Monitoring (one GROUP BY query)
+                # ==========================================================
                 dep_table = self._detect_table(conn, "dependency_metrics", "dependency_calls")
                 cursor = conn.execute(
                     f"""
-                    SELECT name, count(*) as total,
-                           sum(success) as success_cnt,
-                           sum(1 - success) as failure_cnt,
-                           avg(latency_ms) as avg_lat,
-                           min(latency_ms) as min_lat,
-                           max(latency_ms) as max_lat
+                    SELECT name,
+                           COUNT(*)          AS total,
+                           SUM(success)      AS success_cnt,
+                           SUM(1 - success)  AS failure_cnt,
+                           AVG(latency_ms)   AS avg_lat,
+                           MIN(latency_ms)   AS min_lat,
+                           MAX(latency_ms)   AS max_lat
                     FROM {dep_table}
                     GROUP BY name
                     """
@@ -397,15 +575,17 @@ class ApiObservabilityReader:
                         "max_latency": round(r["max_lat"] or 0.0, 2),
                     })
 
-                # Background Task Monitoring
+                # ==========================================================
+                # Background Task Monitoring (one GROUP BY query)
+                # ==========================================================
                 if self._table_exists(conn, "background_tasks"):
                     cursor = conn.execute(
                         """
                         SELECT task_name,
-                               sum(case when status = 'running' then 1 else 0 end) as running,
-                               sum(case when status = 'completed' then 1 else 0 end) as completed,
-                               sum(case when status = 'failed' then 1 else 0 end) as failed,
-                               avg(execution_time) as avg_exec
+                               SUM(CASE WHEN status = 'running'   THEN 1 ELSE 0 END) AS running,
+                               SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed,
+                               SUM(CASE WHEN status = 'failed'    THEN 1 ELSE 0 END) AS failed,
+                               AVG(execution_time)                                    AS avg_exec
                         FROM background_tasks
                         GROUP BY task_name
                         """
@@ -419,14 +599,17 @@ class ApiObservabilityReader:
                             "avg_execution_time": round(r["avg_exec"] or 0.0, 2) if r["avg_exec"] else 0.0,
                         })
 
-                # Upload Monitoring
+                # ==========================================================
+                # Upload Monitoring (one GROUP BY query)
+                # ==========================================================
                 upload_table = self._detect_table(conn, "uploads", "upload_events")
                 cursor = conn.execute(
                     f"""
-                    SELECT upload_type, count(*) as total,
-                           sum(case when success = 0 then 1 else 0 end) as failed,
-                           avg(latency_ms) as avg_lat,
-                           max(size_bytes) as max_size
+                    SELECT upload_type,
+                           COUNT(*)                                        AS total,
+                           SUM(CASE WHEN success = 0 THEN 1 ELSE 0 END)   AS failed,
+                           AVG(latency_ms)                                 AS avg_lat,
+                           MAX(size_bytes)                                 AS max_size
                     FROM {upload_table}
                     GROUP BY upload_type
                     """
@@ -440,7 +623,6 @@ class ApiObservabilityReader:
                     uploads["failed_uploads_count"] += r["failed"] or 0
                     if r["max_size"] and r["max_size"] > uploads["largest_upload_bytes"]:
                         uploads["largest_upload_bytes"] = r["max_size"]
-
                     if ut == "image":
                         uploads["image_uploads_count"] = r["total"]
                     else:
@@ -449,10 +631,12 @@ class ApiObservabilityReader:
                 if total_uploads > 0:
                     uploads["avg_upload_time_ms"] = round(total_upload_time / total_uploads, 2)
 
-                # Authentication Analytics
+                # ==========================================================
+                # Authentication Analytics (one GROUP BY query)
+                # ==========================================================
                 auth_table = self._detect_table(conn, "authentication", "auth_events")
                 cursor = conn.execute(
-                    f"SELECT event_type, count(*) as cnt FROM {auth_table} GROUP BY event_type"
+                    f"SELECT event_type, COUNT(*) AS cnt FROM {auth_table} GROUP BY event_type"
                 )
                 for r in cursor.fetchall():
                     et = r["event_type"]
@@ -469,7 +653,9 @@ class ApiObservabilityReader:
         except Exception as e:
             logger.error("Error reading backend observability database: %s", e)
 
-        # Worker Details (psutil runtime mapping)
+        # ==========================================================
+        # Worker Details (psutil + worker_stats — two small queries)
+        # ==========================================================
         workers_info = self._get_backend_workers()
         worker_details: List[Dict[str, Any]] = []
         db_pids: set = set()
@@ -480,9 +666,10 @@ class ApiObservabilityReader:
                         cursor = conn.execute(
                             "SELECT pid, handled_requests, active_requests FROM worker_stats"
                         )
+                        workers_pid_map = {w["pid"]: w for w in workers_info}
                         for r in cursor.fetchall():
                             db_pids.add(r["pid"])
-                            matching = next((w for w in workers_info if w["pid"] == r["pid"]), None)
+                            matching = workers_pid_map.get(r["pid"])
                             worker_details.append({
                                 "pid": r["pid"],
                                 "cpu_percent": matching["cpu_percent"] if matching else 0.0,
