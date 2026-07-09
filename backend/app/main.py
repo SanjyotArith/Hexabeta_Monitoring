@@ -81,13 +81,9 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     collector_registry.register(SystemProvider())
     collector_registry.register(AvailabilityProvider())
 
-    # ---- Phase 3 Providers & Engine ----
+    # ---- Phase 3 Provider (Read-Only Consumer) ----
     from app.providers.api_provider import ApiProvider
-    from app.core.api_observability import api_observability_engine, patch_all_dependencies
-    
     collector_registry.register(ApiProvider())
-    patch_all_dependencies()
-    api_observability_engine.start()
 
     logger.info(
         "Registered collectors/providers: %s",
@@ -114,7 +110,6 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.info("HexaAgent shutting down")
 
     # ---- Graceful shutdown ----
-    await api_observability_engine.stop()
     await snapshot_manager.stop()
     await snapshot_pusher.stop()
     await reporter.stop()
@@ -147,9 +142,8 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# API Observability Middleware (Phase 3)
-from app.core.api_observability import ApiObservabilityMiddleware
-app.add_middleware(ApiObservabilityMiddleware)
+# Phase 3: API Observability is now read-only — no middleware needed.
+# HexaAgent reads from HexaBeta Backend's api_observability.db.
 
 # Mount API routers
 app.include_router(system_router, prefix="/api/v1")     # Phase 1 (unchanged)
