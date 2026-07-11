@@ -1,6 +1,8 @@
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
+from app.evidence import EvidencePackage
+from app.collector import CollectorManager
 
 @dataclass
 class Incident:
@@ -10,6 +12,7 @@ class Incident:
     status: str = "ACTIVE"
     failure_reason: str = ""
     verification_attempts: int = 0
+    evidence: Optional[EvidencePackage] = None
 
 # Encapsulated in-memory storage
 _ACTIVE_INCIDENTS: dict[str, Incident] = {}
@@ -20,14 +23,13 @@ def _generate_incident_id() -> str:
     Generates a sequential human-readable incident ID: INC-YYYYMMDD-XXXX
     """
     today_str = datetime.now().strftime("%Y%m%d")
-    # Increment counter for today
     _DAILY_COUNTERS[today_str] = _DAILY_COUNTERS.get(today_str, 0) + 1
     seq_num = _DAILY_COUNTERS[today_str]
     return f"INC-{today_str}-{seq_num:04d}"
 
-def create_incident(target_name: str, failure_reason: str, verification_attempts: int) -> Incident:
+def create_incident(target_name: str, failure_reason: str, verification_attempts: int, config: dict) -> Incident:
     """
-    Creates a new ACTIVE incident in memory for the target.
+    Creates a new ACTIVE incident in memory for the target and triggers evidence collection.
     If an incident is already active for this target, returns it instead of creating a duplicate.
     """
     if target_name in _ACTIVE_INCIDENTS:
@@ -44,7 +46,14 @@ def create_incident(target_name: str, failure_reason: str, verification_attempts
         failure_reason=failure_reason,
         verification_attempts=verification_attempts
     )
+    
+    # Store incident first so we can link it
     _ACTIVE_INCIDENTS[target_name] = incident
+    
+    # Run evidence collection using CollectorManager
+    evidence_package = CollectorManager.run(incident_id, target_name, config)
+    incident.evidence = evidence_package
+    
     return incident
 
 def is_incident_active(target_name: str) -> bool:

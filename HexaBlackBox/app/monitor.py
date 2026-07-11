@@ -34,7 +34,7 @@ def start_monitoring(config: dict):
     attempts = incident_conf["verification_attempts"]
     delay = incident_conf["verification_delay"]
     
-    print("Starting HexaBlackBox Core Monitoring Engine (Milestone 2)...")
+    print("Starting HexaBlackBox Core Monitoring Engine (Milestone 3)...")
     print(f"Monitoring {len(targets)} target(s). Press Ctrl+C to exit.\n")
     
     while True:
@@ -85,7 +85,7 @@ def start_monitoring(config: dict):
                         
                 if not verification_successful:
                     # Create active incident
-                    incident = create_incident(name, last_reason or "Unknown failure", attempts)
+                    incident = create_incident(name, last_reason or "Unknown failure", attempts, config)
                     fail_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     print(f"[{fail_time}] Target: {name} | Verification Failed | Creating Incident...", flush=True)
                     print(f"[{fail_time}] Target: {name} | Incident Created | Status: ACTIVE | Incident ID: {incident.id}", flush=True)

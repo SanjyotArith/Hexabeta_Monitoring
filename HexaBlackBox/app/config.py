@@ -115,10 +115,28 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
         print(f"Error: 'verification_delay' must be an integer >= 1. Got '{verification_delay}'", file=sys.stderr)
         sys.exit(1)
 
+    # Validate collectors parameters
+    collectors_conf = config.get("collectors", {})
+    if not isinstance(collectors_conf, dict):
+        print("Error: 'collectors' configuration must be a dictionary", file=sys.stderr)
+        sys.exit(1)
+
+    validated_collectors = {}
+    for coll_name, coll_val in collectors_conf.items():
+        if not isinstance(coll_val, dict):
+            print(f"Error: Collector '{coll_name}' configuration must be a dictionary", file=sys.stderr)
+            sys.exit(1)
+        enabled = coll_val.get("enabled", False)
+        if not isinstance(enabled, bool):
+            print(f"Error: Collector '{coll_name}' enabled flag must be a boolean", file=sys.stderr)
+            sys.exit(1)
+        validated_collectors[coll_name] = {"enabled": enabled}
+
     return {
         "targets": validated_targets,
         "incident": {
             "verification_attempts": verification_attempts,
             "verification_delay": verification_delay
-        }
+        },
+        "collectors": validated_collectors
     }
