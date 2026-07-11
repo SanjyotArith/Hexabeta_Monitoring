@@ -91,4 +91,34 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
             "validation": validation
         })
 
-    return {"targets": validated_targets}
+    # Validate incident parameters
+    incident_conf = config.get("incident", {})
+    if not isinstance(incident_conf, dict):
+        print("Error: 'incident' configuration must be a dictionary", file=sys.stderr)
+        sys.exit(1)
+
+    verification_attempts = incident_conf.get("verification_attempts", 2)
+    try:
+        verification_attempts = int(verification_attempts)
+        if verification_attempts < 1:
+            raise ValueError
+    except (ValueError, TypeError):
+        print(f"Error: 'verification_attempts' must be an integer >= 1. Got '{verification_attempts}'", file=sys.stderr)
+        sys.exit(1)
+
+    verification_delay = incident_conf.get("verification_delay", 2)
+    try:
+        verification_delay = int(verification_delay)
+        if verification_delay < 1:
+            raise ValueError
+    except (ValueError, TypeError):
+        print(f"Error: 'verification_delay' must be an integer >= 1. Got '{verification_delay}'", file=sys.stderr)
+        sys.exit(1)
+
+    return {
+        "targets": validated_targets,
+        "incident": {
+            "verification_attempts": verification_attempts,
+            "verification_delay": verification_delay
+        }
+    }
