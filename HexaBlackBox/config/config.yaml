@@ -1,1 +1,35 @@
-# HexaBlackBox config
+targets:
+  - name: "HexaBeta Backend API"
+    endpoint: "http://localhost:8002/api/health"
+    method: "GET"
+    interval: 2
+    timeout: 3
+    validation:
+      status_code: 200
+      body_contains: "healthy"
+
+incident:
+  verification_attempts: 2
+  verification_delay: 2
+
+collectors:
+  nginx:
+    enabled: true
+    binary_path: "/opt/homebrew/bin/nginx"
+    config_path: "/opt/homebrew/etc/nginx/nginx.conf"
+    error_log_path: "/opt/homebrew/var/log/nginx/error.log"
+    access_log_path: "/opt/homebrew/var/log/nginx/access.log"
+    log_lines: 50
+
+  cloudflared:
+    enabled: true
+    tunnel_name: "mac-mini"
+    config_path: "/Users/hexabeta/.cloudflared/config.yml"
+    log_path: "/Users/hexabeta/.cloudflared/cloudflared.log"
+    log_lines: 50
+
+  uvicorn:
+    enabled: true
+    service_label: "com.hexa.backend"
+    port: 8002
+    expected_workers: 4

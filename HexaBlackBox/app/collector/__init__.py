@@ -8,7 +8,7 @@ class BaseCollector(ABC):
         self.name = name
 
     @abstractmethod
-    def collect(self) -> CollectorResult:
+    def collect(self, config: dict) -> CollectorResult:
         """
         Runs collection logic and returns a CollectorResult.
         Must not write files, print directly, or terminate the process.
@@ -61,7 +61,7 @@ class CollectorManager:
             
             try:
                 collector_instance = collector_cls(name)
-                res = collector_instance.collect()
+                res = collector_instance.collect(collector_cfg)
                 
                 # Verify that it returned a CollectorResult
                 if not isinstance(res, CollectorResult):
@@ -102,3 +102,12 @@ class CollectorManager:
             collected_at=collected_at,
             collector_results=results
         )
+
+# Register collectors
+from app.collector.nginx import NginxCollector
+from app.collector.cloudflared import CloudflaredCollector
+from app.collector.uvicorn import UvicornCollector
+
+CollectorManager.register("nginx", NginxCollector)
+CollectorManager.register("cloudflared", CloudflaredCollector)
+CollectorManager.register("uvicorn", UvicornCollector)

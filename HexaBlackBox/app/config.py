@@ -130,7 +130,105 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
         if not isinstance(enabled, bool):
             print(f"Error: Collector '{coll_name}' enabled flag must be a boolean", file=sys.stderr)
             sys.exit(1)
-        validated_collectors[coll_name] = {"enabled": enabled}
+            
+        validated_config = {"enabled": enabled}
+        
+        if enabled:
+            if coll_name == "nginx":
+                binary_path = coll_val.get("binary_path")
+                config_path = coll_val.get("config_path")
+                error_log_path = coll_val.get("error_log_path")
+                access_log_path = coll_val.get("access_log_path")
+                log_lines = coll_val.get("log_lines", 50)
+                
+                if not isinstance(binary_path, str) or not binary_path:
+                    print("Error: nginx 'binary_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(config_path, str) or not config_path:
+                    print("Error: nginx 'config_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(error_log_path, str) or not error_log_path:
+                    print("Error: nginx 'error_log_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(access_log_path, str) or not access_log_path:
+                    print("Error: nginx 'access_log_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    log_lines = int(log_lines)
+                    if log_lines < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: nginx 'log_lines' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                    
+                validated_config.update({
+                    "binary_path": binary_path,
+                    "config_path": config_path,
+                    "error_log_path": error_log_path,
+                    "access_log_path": access_log_path,
+                    "log_lines": log_lines
+                })
+                
+            elif coll_name == "cloudflared":
+                tunnel_name = coll_val.get("tunnel_name")
+                config_path = coll_val.get("config_path")
+                log_path = coll_val.get("log_path")
+                log_lines = coll_val.get("log_lines", 50)
+                
+                if not isinstance(tunnel_name, str) or not tunnel_name:
+                    print("Error: cloudflared 'tunnel_name' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(config_path, str) or not config_path:
+                    print("Error: cloudflared 'config_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(log_path, str) or not log_path:
+                    print("Error: cloudflared 'log_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    log_lines = int(log_lines)
+                    if log_lines < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: cloudflared 'log_lines' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                    
+                validated_config.update({
+                    "tunnel_name": tunnel_name,
+                    "config_path": config_path,
+                    "log_path": log_path,
+                    "log_lines": log_lines
+                })
+                
+            elif coll_name == "uvicorn":
+                service_label = coll_val.get("service_label")
+                port = coll_val.get("port")
+                expected_workers = coll_val.get("expected_workers")
+                
+                if not isinstance(service_label, str) or not service_label:
+                    print("Error: uvicorn 'service_label' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    port = int(port)
+                    if port < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: uvicorn 'port' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    expected_workers = int(expected_workers)
+                    if expected_workers < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: uvicorn 'expected_workers' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                    
+                validated_config.update({
+                    "service_label": service_label,
+                    "port": port,
+                    "expected_workers": expected_workers
+                })
+
+        validated_collectors[coll_name] = validated_config
 
     return {
         "targets": validated_targets,
