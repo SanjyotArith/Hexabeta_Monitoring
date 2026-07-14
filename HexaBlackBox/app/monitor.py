@@ -46,6 +46,22 @@ def start_monitoring(config: dict):
                 # If active, skip verification logic, run check, and print status with incident active suffix
                 result = execute_check(target)
                 print(format_result(result), flush=True)
+                
+                if result.status == "HEALTHY":
+                    from app.incident import resolve_incident
+                    resolved_inc = resolve_incident(name)
+                    if resolved_inc:
+                        print(
+                            f"\n--------------------------------------------------\n"
+                            f"Target Recovered\n\n"
+                            f"Incident ID : {resolved_inc.id}\n\n"
+                            f"Target      : {resolved_inc.target_name}\n\n"
+                            f"Recovered At: {resolved_inc.resolved_at}\n\n"
+                            f"Duration    : {resolved_inc.duration_seconds} seconds\n\n"
+                            f"Status      : {resolved_inc.status}\n"
+                            f"--------------------------------------------------\n",
+                            flush=True
+                        )
                 time.sleep(target["interval"])
                 continue
                 

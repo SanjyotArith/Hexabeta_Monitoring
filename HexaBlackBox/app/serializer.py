@@ -59,6 +59,8 @@ def serialize_incident(incident) -> Dict[str, Any]:
         "incident_id": incident.id,
         "target_name": incident.target_name,
         "started_at": incident.started_at,
+        "resolved_at": getattr(incident, "resolved_at", None),
+        "duration_seconds": getattr(incident, "duration_seconds", None),
         "status": incident.status,
         "failure_reason": incident.failure_reason,
         "verification_attempts": incident.verification_attempts,
