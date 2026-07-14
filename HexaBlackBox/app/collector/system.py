@@ -59,14 +59,31 @@ class SystemCollector(BaseCollector):
             
             disk_percent = None
             if p_disk.returncode == 0:
-                lines = p_disk.stdout.splitlines()
-                for line in lines[1:]:
-                    if not line.strip():
-                        continue
-                    matches = re.findall(r'(\d+)%', line)
-                    if matches:
-                        disk_percent = int(matches[-1])
-                        break
+                lines = [l.strip() for l in p_disk.stdout.splitlines() if l.strip()]
+                if len(lines) >= 2:
+                    header_parts = lines[0].split()
+                    capacity_idx = -1
+                    for idx, part in enumerate(header_parts):
+                        part_lower = part.lower()
+                        if "capacity" in part_lower or "use%" in part_lower or part_lower == "cap" or part_lower == "use":
+                            capacity_idx = idx
+                            break
+                    
+                    for line in lines[1:]:
+                        parts = line.split()
+                        # 1. Primary: Try to parse using header-based index
+                        if capacity_idx != -1 and len(parts) > capacity_idx:
+                            val = parts[capacity_idx]
+                            matches = re.findall(r'(\d+)%', val)
+                            if matches:
+                                disk_percent = int(matches[0])
+                                break
+                        
+                        # 2. Fallback: Take the first percentage value found in the line
+                        matches = re.findall(r'(\d+)%', line)
+                        if matches:
+                            disk_percent = int(matches[0])
+                            break
                         
             data["disk"] = {
                 "exit_code": p_disk.returncode,

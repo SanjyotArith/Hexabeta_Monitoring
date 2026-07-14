@@ -355,6 +355,48 @@ collectors:
         assert res.data["disk"]["threshold_exceeded"] is False
         print("Malformed Disk Output Test: PASSED")
 
+    # macOS %iused vs Capacity Regression Test
+    def mock_sys_regression_disk_run(args, **kwargs):
+        cmd = " ".join(args)
+        if "hostname" in cmd: return MockCompletedProcess(0, "mac-mini", "")
+        if "sw_vers" in cmd: return MockCompletedProcess(0, "macOS", "")
+        if "uptime" in cmd: return MockCompletedProcess(0, "up", "")
+        if "sysctl" in cmd: return MockCompletedProcess(0, "1.0", "")
+        if "vm_stat" in cmd: return MockCompletedProcess(0, "Pages", "")
+        if "df" in cmd:
+            stdout_content = "Filesystem      Size   Used   Avail Capacity iused ifree %iused Mounted on\n/dev/disk3s1s1  460Gi   13Gi   308Gi     4%   350000 2.5G    0%   /\n"
+            return MockCompletedProcess(0, stdout_content, "")
+        return MockCompletedProcess(1, "", "")
+
+    with patch("subprocess.run", side_effect=mock_sys_regression_disk_run):
+        res = sys_collector.collect(sys_valid_config)
+        assert_collector_result(res, "system")
+        assert res.success is True
+        assert res.data["disk"]["parsed_usage_percent"] == 4, f"Expected 4%, got {res.data['disk']['parsed_usage_percent']}"
+        assert res.data["disk"]["threshold_exceeded"] is False
+        print("macOS %iused vs Capacity Regression Test: PASSED")
+
+    # Linux-style Use% Column Test
+    def mock_sys_linux_disk_run(args, **kwargs):
+        cmd = " ".join(args)
+        if "hostname" in cmd: return MockCompletedProcess(0, "linux-host", "")
+        if "sw_vers" in cmd: return MockCompletedProcess(0, "Linux", "")
+        if "uptime" in cmd: return MockCompletedProcess(0, "up", "")
+        if "sysctl" in cmd: return MockCompletedProcess(0, "1.0", "")
+        if "vm_stat" in cmd: return MockCompletedProcess(0, "Pages", "")
+        if "df" in cmd:
+            stdout_content = "Filesystem      Size  Used Avail Use% Mounted on\n/dev/sda1        30G   12G   17G  45% /\n"
+            return MockCompletedProcess(0, stdout_content, "")
+        return MockCompletedProcess(1, "", "")
+
+    with patch("subprocess.run", side_effect=mock_sys_linux_disk_run):
+        res = sys_collector.collect(sys_valid_config)
+        assert_collector_result(res, "system")
+        assert res.success is True
+        assert res.data["disk"]["parsed_usage_percent"] == 45, f"Expected 45%, got {res.data['disk']['parsed_usage_percent']}"
+        assert res.data["disk"]["threshold_exceeded"] is False
+        print("Linux Use% Column Test: PASSED")
+
     # ----------------------------------------------------
     # 6. Launchctl Collector Tests
     # ----------------------------------------------------
