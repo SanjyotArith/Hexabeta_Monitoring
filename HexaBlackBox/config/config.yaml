@@ -33,3 +33,45 @@ collectors:
     service_label: "com.hexa.backend"
     port: 8002
     expected_workers: 4
+
+  postgres:
+    enabled: false
+    timeout: 5
+    binary_path: "/opt/homebrew/bin/pg_isready"
+    host: "localhost"
+    port: 5432
+    username: "postgres"
+    dbname: "postgres"
+    password: ""
+    log_path: "/opt/homebrew/var/log/postgres.log"
+    log_lines: 50
+
+  redis:
+    enabled: false
+    timeout: 5
+    binary_path: "/opt/homebrew/bin/redis-cli"
+    host: "localhost"
+    port: 6379
+    username: ""
+    password: ""
+    log_path: "/opt/homebrew/var/log/redis.log"
+    log_lines: 50
+
+  system:
+    enabled: false
+    timeout: 5
+    hostname_command: "hostname"
+    os_version_command: "sw_vers"
+    uptime_command: "uptime"
+    cpu_command: "sysctl -n vm.loadavg"
+    memory_command: "vm_stat"
+    disk_command: "df -h"
+    disk_path: "/"
+    disk_threshold: 90
+
+  launchctl:
+    enabled: false
+    timeout: 5
+    services:
+      - "com.hexa.backend"
+      - "com.apple.Spotlight"

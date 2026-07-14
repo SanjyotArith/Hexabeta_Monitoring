@@ -228,6 +228,201 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
                     "expected_workers": expected_workers
                 })
 
+            elif coll_name == "postgres":
+                timeout = coll_val.get("timeout", 5)
+                try:
+                    timeout = int(timeout)
+                    if timeout < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: postgres 'timeout' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                binary_path = coll_val.get("binary_path")
+                host = coll_val.get("host")
+                port = coll_val.get("port")
+                username = coll_val.get("username")
+                dbname = coll_val.get("dbname")
+                password = coll_val.get("password", "")
+                log_path = coll_val.get("log_path")
+                log_lines = coll_val.get("log_lines", 50)
+                
+                if not isinstance(binary_path, str) or not binary_path:
+                    print("Error: postgres 'binary_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(host, str) or not host:
+                    print("Error: postgres 'host' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    port = int(port)
+                    if port < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: postgres 'port' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(username, str) or not username:
+                    print("Error: postgres 'username' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(dbname, str) or not dbname:
+                    print("Error: postgres 'dbname' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(log_path, str) or not log_path:
+                    print("Error: postgres 'log_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    log_lines = int(log_lines)
+                    if log_lines < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: postgres 'log_lines' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                    
+                validated_config.update({
+                    "timeout": timeout,
+                    "binary_path": binary_path,
+                    "host": host,
+                    "port": port,
+                    "username": username,
+                    "dbname": dbname,
+                    "password": password,
+                    "log_path": log_path,
+                    "log_lines": log_lines
+                })
+
+            elif coll_name == "redis":
+                timeout = coll_val.get("timeout", 5)
+                try:
+                    timeout = int(timeout)
+                    if timeout < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: redis 'timeout' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                binary_path = coll_val.get("binary_path")
+                host = coll_val.get("host")
+                port = coll_val.get("port")
+                username = coll_val.get("username", "")
+                password = coll_val.get("password", "")
+                log_path = coll_val.get("log_path")
+                log_lines = coll_val.get("log_lines", 50)
+                
+                if not isinstance(binary_path, str) or not binary_path:
+                    print("Error: redis 'binary_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(host, str) or not host:
+                    print("Error: redis 'host' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    port = int(port)
+                    if port < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: redis 'port' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(log_path, str) or not log_path:
+                    print("Error: redis 'log_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    log_lines = int(log_lines)
+                    if log_lines < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: redis 'log_lines' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                    
+                validated_config.update({
+                    "timeout": timeout,
+                    "binary_path": binary_path,
+                    "host": host,
+                    "port": port,
+                    "username": username,
+                    "password": password,
+                    "log_path": log_path,
+                    "log_lines": log_lines
+                })
+
+            elif coll_name == "system":
+                timeout = coll_val.get("timeout", 5)
+                try:
+                    timeout = int(timeout)
+                    if timeout < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: system 'timeout' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                hostname_command = coll_val.get("hostname_command")
+                os_version_command = coll_val.get("os_version_command")
+                uptime_command = coll_val.get("uptime_command")
+                cpu_command = coll_val.get("cpu_command")
+                memory_command = coll_val.get("memory_command")
+                disk_command = coll_val.get("disk_command")
+                disk_path = coll_val.get("disk_path", "/")
+                disk_threshold = coll_val.get("disk_threshold", 90)
+                
+                if not isinstance(hostname_command, str) or not hostname_command:
+                    print("Error: system 'hostname_command' must be a non-empty string", file=sys.stderr)
+                    sys.stderr.flush()
+                    sys.exit(1)
+                if not isinstance(os_version_command, str) or not os_version_command:
+                    print("Error: system 'os_version_command' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(uptime_command, str) or not uptime_command:
+                    print("Error: system 'uptime_command' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(cpu_command, str) or not cpu_command:
+                    print("Error: system 'cpu_command' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(memory_command, str) or not memory_command:
+                    print("Error: system 'memory_command' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(disk_command, str) or not disk_command:
+                    print("Error: system 'disk_command' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                if not isinstance(disk_path, str) or not disk_path:
+                    print("Error: system 'disk_path' must be a non-empty string", file=sys.stderr)
+                    sys.exit(1)
+                try:
+                    disk_threshold = int(disk_threshold)
+                    if disk_threshold < 1 or disk_threshold > 100:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: system 'disk_threshold' must be an integer between 1 and 100", file=sys.stderr)
+                    sys.exit(1)
+                    
+                validated_config.update({
+                    "timeout": timeout,
+                    "hostname_command": hostname_command,
+                    "os_version_command": os_version_command,
+                    "uptime_command": uptime_command,
+                    "cpu_command": cpu_command,
+                    "memory_command": memory_command,
+                    "disk_command": disk_command,
+                    "disk_path": disk_path,
+                    "disk_threshold": disk_threshold
+                })
+
+            elif coll_name == "launchctl":
+                timeout = coll_val.get("timeout", 5)
+                try:
+                    timeout = int(timeout)
+                    if timeout < 1:
+                        raise ValueError
+                except (ValueError, TypeError):
+                    print("Error: launchctl 'timeout' must be an integer >= 1", file=sys.stderr)
+                    sys.exit(1)
+                services = coll_val.get("services")
+                if not isinstance(services, list):
+                    print("Error: launchctl 'services' must be a list of strings", file=sys.stderr)
+                    sys.exit(1)
+                for svc in services:
+                    if not isinstance(svc, str) or not svc:
+                        print("Error: launchctl 'services' list must only contain non-empty strings", file=sys.stderr)
+                        sys.exit(1)
+                        
+                validated_config.update({
+                    "timeout": timeout,
+                    "services": services
+                })
+
         validated_collectors[coll_name] = validated_config
 
     return {

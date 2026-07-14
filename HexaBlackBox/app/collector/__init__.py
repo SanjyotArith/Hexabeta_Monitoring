@@ -107,7 +107,15 @@ class CollectorManager:
 from app.collector.nginx import NginxCollector
 from app.collector.cloudflared import CloudflaredCollector
 from app.collector.uvicorn import UvicornCollector
+from app.collector.postgres import PostgresCollector
+from app.collector.redis import RedisCollector
+from app.collector.system import SystemCollector
+from app.collector.launchctl import LaunchctlCollector
 
 CollectorManager.register("nginx", NginxCollector)
 CollectorManager.register("cloudflared", CloudflaredCollector)
 CollectorManager.register("uvicorn", UvicornCollector)
+CollectorManager.register("postgres", PostgresCollector)
+CollectorManager.register("redis", RedisCollector)
+CollectorManager.register("system", SystemCollector)
+CollectorManager.register("launchctl", LaunchctlCollector)
