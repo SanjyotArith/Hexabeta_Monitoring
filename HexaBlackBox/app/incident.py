@@ -54,6 +54,17 @@ def create_incident(target_name: str, failure_reason: str, verification_attempts
     evidence_package = CollectorManager.run(incident_id, target_name, config)
     incident.evidence = evidence_package
     
+    # Serialize and persist incident package atomically to disk
+    try:
+        from app.serializer import serialize_incident
+        from app.storage import save_incident_payload
+        
+        payload = serialize_incident(incident)
+        save_incident_payload(incident_id, payload)
+    except Exception as e:
+        import sys
+        print(f"Unexpected serialization block failure: {e}", file=sys.stderr, flush=True)
+        
     return incident
 
 def is_incident_active(target_name: str) -> bool:
