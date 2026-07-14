@@ -240,9 +240,7 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
                 binary_path = coll_val.get("binary_path")
                 host = coll_val.get("host")
                 port = coll_val.get("port")
-                username = coll_val.get("username")
-                dbname = coll_val.get("dbname")
-                password = coll_val.get("password", "")
+                databases = coll_val.get("databases")
                 log_path = coll_val.get("log_path")
                 log_lines = coll_val.get("log_lines", 50)
                 
@@ -259,12 +257,6 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
                 except (ValueError, TypeError):
                     print("Error: postgres 'port' must be an integer >= 1", file=sys.stderr)
                     sys.exit(1)
-                if not isinstance(username, str) or not username:
-                    print("Error: postgres 'username' must be a non-empty string", file=sys.stderr)
-                    sys.exit(1)
-                if not isinstance(dbname, str) or not dbname:
-                    print("Error: postgres 'dbname' must be a non-empty string", file=sys.stderr)
-                    sys.exit(1)
                 if not isinstance(log_path, str) or not log_path:
                     print("Error: postgres 'log_path' must be a non-empty string", file=sys.stderr)
                     sys.exit(1)
@@ -276,14 +268,59 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
                     print("Error: postgres 'log_lines' must be an integer >= 1", file=sys.stderr)
                     sys.exit(1)
                     
+                # Validate databases key exists and is non-empty list
+                if databases is None:
+                    print("Error: postgres 'databases' key must exist", file=sys.stderr)
+                    sys.exit(1)
+                    return
+                if not isinstance(databases, list) or len(databases) == 0:
+                    print("Error: postgres 'databases' must be a non-empty list", file=sys.stderr)
+                    sys.exit(1)
+                    return
+                    
+                db_names = set()
+                validated_databases = []
+                for idx, db_entry in enumerate(databases):
+                    if not isinstance(db_entry, dict):
+                        print(f"Error: postgres database entry at index {idx} must be a dictionary", file=sys.stderr)
+                        sys.exit(1)
+                        return
+                    
+                    db_name = db_entry.get("name")
+                    db_user = db_entry.get("username")
+                    db_pass = db_entry.get("password")
+                    
+                    if db_name is None or not isinstance(db_name, str) or not db_name.strip():
+                        print(f"Error: postgres database entry at index {idx} must have a non-empty string 'name'", file=sys.stderr)
+                        sys.exit(1)
+                        return
+                    if db_user is None or not isinstance(db_user, str):
+                        print(f"Error: postgres database entry at index {idx} must have a string 'username'", file=sys.stderr)
+                        sys.exit(1)
+                        return
+                    if db_pass is None or not isinstance(db_pass, str):
+                        print(f"Error: postgres database entry at index {idx} must have a string 'password'", file=sys.stderr)
+                        sys.exit(1)
+                        return
+                        
+                    if db_name in db_names:
+                        print(f"Error: postgres database entry at index {idx} has duplicate 'name' '{db_name}'", file=sys.stderr)
+                        sys.exit(1)
+                        return
+                    db_names.add(db_name)
+                    
+                    validated_databases.append({
+                        "name": db_name,
+                        "username": db_user,
+                        "password": db_pass
+                    })
+                    
                 validated_config.update({
                     "timeout": timeout,
                     "binary_path": binary_path,
                     "host": host,
                     "port": port,
-                    "username": username,
-                    "dbname": dbname,
-                    "password": password,
+                    "databases": validated_databases,
                     "log_path": log_path,
                     "log_lines": log_lines
                 })

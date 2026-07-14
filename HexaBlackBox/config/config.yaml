@@ -40,9 +40,13 @@ collectors:
     binary_path: "/opt/homebrew/bin/pg_isready"
     host: "localhost"
     port: 5432
-    username: "postgres"
-    dbname: "postgres"
-    password: ""
+    databases:
+      - name: "loops_db"
+        username: "hexa_user"
+        password: ""
+      - name: "wallet_db"
+        username: "hexa_user"
+        password: ""
     log_path: "/opt/homebrew/var/log/postgres.log"
     log_lines: 50
 

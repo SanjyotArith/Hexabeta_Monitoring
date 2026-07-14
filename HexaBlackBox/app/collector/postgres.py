@@ -14,11 +14,14 @@ class PostgresCollector(BaseCollector):
         binary_path = config.get("binary_path")
         host = config.get("host")
         port = config.get("port")
-        username = config.get("username")
-        dbname = config.get("dbname")
-        password = config.get("password", "")
+        databases = config.get("databases", [])
         log_path = config.get("log_path")
         log_lines = config.get("log_lines", 50)
+        
+        # Determine credentials of the first database to use for pg_isready checks
+        first_db = databases[0] if databases else {}
+        username = first_db.get("username", "postgres")
+        dbname = first_db.get("name", "postgres")
         
         data = {}
         error_msg = None
@@ -48,7 +51,7 @@ class PostgresCollector(BaseCollector):
             data["running"] = len(postgres_processes) > 0
             data["processes"] = postgres_processes
             
-            # 2. Connection Check (pg_isready)
+            # 2. Connection Check (pg_isready - executed once using first DB credentials)
             cmd_args = [binary_path, "-h", host, "-p", str(port), "-U", username, "-d", dbname]
             p_isready = subprocess.run(cmd_args, capture_output=True, text=True, timeout=timeout)
             
@@ -58,36 +61,52 @@ class PostgresCollector(BaseCollector):
                 "stderr": p_isready.stderr.strip()
             }
             
-            # 3. Active Connections & Configured Max Connections via psycopg2
-            active_connections = None
-            max_connections = None
-            db_query_warning = None
-            
-            try:
-                import psycopg2
-                conn = psycopg2.connect(
-                    host=host,
-                    port=port,
-                    user=username,
-                    dbname=dbname,
-                    password=password,
-                    connect_timeout=timeout
-                )
-                try:
-                    with conn.cursor() as cur:
-                        cur.execute("SELECT count(*) FROM pg_stat_activity;")
-                        active_connections = cur.fetchone()[0]
-                        
-                        cur.execute("SELECT setting FROM pg_settings WHERE name = 'max_connections';")
-                        max_connections = int(cur.fetchone()[0])
-                finally:
-                    conn.close()
-            except Exception as db_err:
-                db_query_warning = str(db_err)
+            # 3. Active Connections & Configured Max Connections via psycopg2 (Per Database)
+            db_data = {}
+            for db_entry in databases:
+                db_name = db_entry.get("name")
+                db_user = db_entry.get("username")
+                db_pass = db_entry.get("password", "")
                 
-            data["active_connections"] = active_connections
-            data["max_connections"] = max_connections
-            data["db_query_warning"] = db_query_warning
+                active_connections = None
+                max_connections = None
+                db_query_warning = None
+                
+                try:
+                    import psycopg2
+                    conn = psycopg2.connect(
+                        host=host,
+                        port=port,
+                        user=db_user,
+                        dbname=db_name,
+                        password=db_pass,
+                        connect_timeout=timeout
+                    )
+                    try:
+                        with conn.cursor() as cur:
+                            # Query connections specifically for this database name
+                            cur.execute("""
+                                SELECT count(*)
+                                FROM pg_stat_activity
+                                WHERE datname = current_database();
+                            """)
+                            active_connections = cur.fetchone()[0]
+                            
+                            # Query max connections configuration limits
+                            cur.execute("SELECT setting FROM pg_settings WHERE name = 'max_connections';")
+                            max_connections = int(cur.fetchone()[0])
+                    finally:
+                        conn.close()
+                except Exception as db_err:
+                    db_query_warning = str(db_err)
+                    
+                db_data[db_name] = {
+                    "active_connections": active_connections,
+                    "max_connections": max_connections,
+                    "db_query_warning": db_query_warning
+                }
+                
+            data["databases"] = db_data
             
             # 4. Read logs
             data["log"] = self._read_last_lines(log_path, log_lines)
