@@ -25,6 +25,31 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
         print("Error: Configuration must be a valid YAML dictionary", file=sys.stderr)
         sys.exit(1)
 
+    # Load and merge local override config if present
+    config_dir = os.path.dirname(config_path)
+    config_local_path = os.path.join(config_dir, "config.local.yaml")
+    if os.path.exists(config_local_path):
+        try:
+            with open(config_local_path, "r", encoding="utf-8") as lf:
+                local_config = yaml.safe_load(lf)
+            if local_config and isinstance(local_config, dict):
+                def merge(d1, d2):
+                    for k, v in d2.items():
+                        if k in d1 and isinstance(d1[k], dict) and isinstance(v, dict):
+                            merge(d1[k], v)
+                        else:
+                            d1[k] = v
+                    return d1
+                config = merge(config, local_config)
+        except yaml.YAMLError as e:
+            print(f"Error: Failed to parse local YAML configuration: {e}", file=sys.stderr)
+            sys.exit(1)
+            return
+        except Exception as e:
+            print(f"Error: Failed to read local configuration file: {e}", file=sys.stderr)
+            sys.exit(1)
+            return
+
     targets = config.get("targets")
     if not targets:
         print("Error: Configuration must define at least one target under 'targets'", file=sys.stderr)

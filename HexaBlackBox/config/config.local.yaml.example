@@ -1,0 +1,46 @@
+# ==============================================================================
+# HexaBlackBox - Local Configuration Overrides Example
+# ==============================================================================
+#
+# Copy this file to "config.local.yaml" in the same directory to customize settings
+# for your local environment. This file is ignored by Git.
+#
+# Only define the keys that you wish to override. All other settings will fall back
+# to the values defined in config.yaml.
+
+# ------------------------------------------------------------------------------
+# Targets overrides
+# ------------------------------------------------------------------------------
+# Example: Customizing check intervals or endpoints locally
+# targets:
+#   - name: "HexaBeta Backend API"
+#     interval: 2
+
+# ------------------------------------------------------------------------------
+# Collectors overrides
+# ------------------------------------------------------------------------------
+collectors:
+  # Enable/disable collectors for testing
+  postgres:
+    enabled: true
+    # Override host, port, or databases configuration locally
+    host: "localhost"
+    port: 5432
+    databases:
+      - name: "loops_db"
+        username: "hexa_user"
+        password: ""
+      - name: "wallet_db"
+        username: "hexa_user"
+        password: ""
+
+  redis:
+    enabled: true
+    host: "localhost"
+    port: 6379
+
+  system:
+    enabled: true
+
+  launchctl:
+    enabled: false

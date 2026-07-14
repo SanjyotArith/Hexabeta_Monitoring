@@ -46,3 +46,6 @@ logs/*
 
 incidents/*
 !incidents/.gitkeep
+
+# Local Configuration overrides
+config/config.local.yaml
