@@ -8,6 +8,17 @@ PLIST_FILE="${HOME}/Library/LaunchAgents/${PLIST_LABEL}.plist"
 TEMPLATE_FILE="config/com.hexablackbox.monitor.plist.template"
 USER_ID=$(id -u)
 
+# Resolve script folder and project root dynamically
+SCRIPT_DIR="$( cd "$( dirname "${BASH_SOURCE[0]}" )" && pwd )"
+WORKING_DIR="${SCRIPT_DIR}"
+
+# Detect project virtual environment parent-folder location
+PYTHON_PATH="$(dirname "${WORKING_DIR}")/venv/bin/python"
+if [ ! -f "${PYTHON_PATH}" ]; then
+    # Fallback to Windows virtual environment binary structure if running locally
+    PYTHON_PATH="$(dirname "${WORKING_DIR}")/venv/Scripts/python.exe"
+fi
+
 # Colors for operator-friendly output
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -26,12 +37,11 @@ fi
 case "$1" in
     install)
         echo "Installing HexaBlackBox Service..."
-        WORKING_DIR=$(pwd)
-        PYTHON_PATH="${WORKING_DIR}/.venv/bin/python"
         
+        # Enforce that the project virtual environment must exist
         if [ ! -f "${PYTHON_PATH}" ]; then
-            PYTHON_PATH=$(which python3)
-            echo -e "${YELLOW}Warning: .venv Python not found. Falling back to system python: ${PYTHON_PATH}${NC}"
+            echo -e "${RED}Error: Virtual environment python interpreter not found at parent venv directory: $(dirname "${WORKING_DIR}")/venv/${NC}"
+            exit 1
         fi
         
         # Ensure logs directory exists
@@ -110,11 +120,6 @@ case "$1" in
         
     status)
         echo -e "--- Service Operational Status ---"
-        WORKING_DIR=$(pwd)
-        PYTHON_PATH="${WORKING_DIR}/.venv/bin/python"
-        if [ ! -f "${PYTHON_PATH}" ]; then
-            PYTHON_PATH=$(which python3)
-        fi
         
         # Plist installation status
         if [ -f "${PLIST_FILE}" ]; then
@@ -153,7 +158,6 @@ case "$1" in
         has_errors=0
         
         # 1. Check working directory
-        WORKING_DIR=$(pwd)
         if [ -d "${WORKING_DIR}" ]; then
             echo -e "[PASS] Working directory exists: ${WORKING_DIR}"
         else
@@ -185,16 +189,15 @@ case "$1" in
                 echo -e "[WARN] plutil tool not found, skipping syntax check"
             fi
         else
-            echo -e "[WARN] Generated plist not found. (Not yet installed)"
+            echo -e "[WARN] Generated plist not found (not installed yet)"
         fi
         
         # 4. Check python path
-        PYTHON_PATH="${WORKING_DIR}/.venv/bin/python"
         if [ -f "${PYTHON_PATH}" ]; then
-            echo -e "[PASS] Virtual environment python interpreter exists"
+            echo -e "[PASS] Virtual environment python interpreter exists: ${PYTHON_PATH}"
         else
-            fallback_py=$(which python3)
-            echo -e "[WARN] .venv python missing. Fallback system path: ${fallback_py}"
+            echo -e "[FAIL] Virtual environment python interpreter missing at: ${PYTHON_PATH}"
+            has_errors=1
         fi
         
         # 5. Check log folders/files
