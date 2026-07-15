@@ -49,7 +49,7 @@ def start_monitoring(config: dict, notifier=None):
                 
                 if result.status == "HEALTHY":
                     from app.incident import resolve_incident
-                    resolved_inc = resolve_incident(name, notifier=notifier)
+                    resolved_inc = resolve_incident(name, notifier=notifier, endpoint=target.get("endpoint"))
                     if resolved_inc:
                         print(
                             f"\n--------------------------------------------------\n"
@@ -101,7 +101,7 @@ def start_monitoring(config: dict, notifier=None):
                         
                 if not verification_successful:
                     # Create active incident
-                    incident = create_incident(name, last_reason or "Unknown failure", attempts, config, notifier=notifier)
+                    incident = create_incident(name, last_reason or "Unknown failure", attempts, config, notifier=notifier, endpoint=target.get("endpoint"))
                     fail_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     print(f"[{fail_time}] Target: {name} | Verification Failed | Creating Incident...", flush=True)
                     print(f"[{fail_time}] Target: {name} | Incident Created | Status: ACTIVE | Incident ID: {incident.id}", flush=True)

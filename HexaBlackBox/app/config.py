@@ -494,7 +494,16 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
         sys.exit(1)
         return
         
+    suppression_enabled = notifier_conf.get("suppression_enabled", True)
+    if not isinstance(suppression_enabled, bool):
+        print("Error: notifier 'suppression_enabled' must be a boolean", file=sys.stderr)
+        sys.exit(1)
+        return
+    validated_notifier["suppression_enabled"] = suppression_enabled
+        
     for provider_name, provider_val in notifier_conf.items():
+        if provider_name == "suppression_enabled":
+            continue
         if not isinstance(provider_val, dict):
             print(f"Error: Notifier provider '{provider_name}' configuration must be a dictionary", file=sys.stderr)
             sys.exit(1)

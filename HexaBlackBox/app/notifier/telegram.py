@@ -29,14 +29,68 @@ class TelegramProvider(NotificationProvider):
         """
         Constructs the string payload representation of the alert message.
         """
+        host = notification.metadata.get("host", "Unknown Host")
+        endpoint = notification.metadata.get("endpoint", "N/A")
+        inc_dir = notification.metadata.get("incident_dir", "N/A")
+        inc_json = notification.metadata.get("incident_json", "N/A")
+        evidence = notification.metadata.get("evidence_package", "none")
+        
+        # Format Developer Guidance cleanly
+        guidance = (
+            f"Developer Guidance\n\n"
+            f"📁 Incident Folder\n"
+            f"{inc_dir}/\n\n"
+            f"📄 Incident Package\n"
+            f"{inc_json}"
+        )
+        if evidence == "available":
+            guidance += "\n\n📦 Evidence\nCollector diagnostics included."
+        
         if notification.notification_type == NotificationType.INCIDENT_CREATED:
+            raw_reason = notification.metadata.get("failure_reason", "Unknown failure")
+            
+            # Format failure reasons to be concise and operator-friendly
+            failure_reason = raw_reason.strip()
+            if "HTTP status code" in failure_reason:
+                parts = failure_reason.split()
+                if parts:
+                    code = parts[-1]
+                    status_map = {
+                        "500": "Internal Server Error",
+                        "502": "Bad Gateway",
+                        "503": "Service Unavailable",
+                        "504": "Gateway Timeout",
+                        "400": "Bad Request",
+                        "401": "Unauthorized",
+                        "403": "Forbidden",
+                        "404": "Not Found"
+                    }
+                    desc = status_map.get(code, "Error")
+                    failure_reason = f"HTTP {code} {desc}"
+            elif "connection failed" in failure_reason.lower():
+                failure_reason = "Connection Failed"
+            elif "connection refused" in failure_reason.lower():
+                failure_reason = "Connection Refused"
+            elif "timeout" in failure_reason.lower():
+                failure_reason = "Timeout"
+            elif "dns resolution" in failure_reason.lower():
+                failure_reason = "DNS Resolution Failed"
+            elif "ssl" in failure_reason.lower():
+                failure_reason = "SSL Failure"
+            elif "validation" in failure_reason.lower():
+                failure_reason = "Validation Failure"
+
             return (
                 f"HexaBlackBox\n\n"
                 f"Incident Created\n\n"
                 f"Incident ID: {notification.incident_id}\n"
                 f"Target: {notification.target_name}\n"
+                f"Host: {host}\n"
+                f"Endpoint: {endpoint}\n"
                 f"Started At: {notification.created_at}\n"
-                f"Status: ACTIVE"
+                f"Status: ACTIVE\n"
+                f"Failure: {failure_reason}\n\n"
+                f"{guidance}"
             )
         elif notification.notification_type == NotificationType.INCIDENT_RESOLVED:
             resolved_at = notification.metadata.get("resolved_at", notification.created_at)
@@ -46,9 +100,11 @@ class TelegramProvider(NotificationProvider):
                 f"Incident Resolved\n\n"
                 f"Incident ID: {notification.incident_id}\n"
                 f"Target: {notification.target_name}\n"
+                f"Host: {host}\n"
                 f"Recovered At: {resolved_at}\n"
                 f"Duration: {duration_sec} seconds\n"
-                f"Status: RESOLVED"
+                f"Status: RESOLVED\n\n"
+                f"{guidance}"
             )
         else:
             return f"HexaBlackBox\n\nTarget: {notification.target_name}\nMessage: {notification.message}"

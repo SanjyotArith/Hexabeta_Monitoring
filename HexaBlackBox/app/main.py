@@ -8,11 +8,15 @@ def main():
         # Load and validate configuration
         config = load_config("config/config.yaml")
         
+        # Extract notifier configuration
+        notifier_config = config.get("notifier", {})
+        suppression_enabled = notifier_config.get("suppression_enabled", True)
+        
         # Instantiate NotificationManager explicitly
-        notifier = NotificationManager()
+        notifier = NotificationManager(suppression_enabled=suppression_enabled)
         
         # Register enabled providers based on configuration
-        notifier_config = config.get("notifier", {})
+        telegram_config = notifier_config.get("telegram", {})
         telegram_config = notifier_config.get("telegram", {})
         if telegram_config.get("enabled", False):
             from app.notifier.telegram import TelegramProvider

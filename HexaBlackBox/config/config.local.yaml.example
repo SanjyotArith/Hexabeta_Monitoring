@@ -44,3 +44,14 @@ collectors:
 
   launchctl:
     enabled: false
+
+# ------------------------------------------------------------------------------
+# Notifier Configuration Overrides
+# ------------------------------------------------------------------------------
+notifier:
+  suppression_enabled: true      # Toggle duplicate notification suppression for active incidents
+  telegram:
+    enabled: false
+    bot_token: "YOUR_BOT_TOKEN"  # Local test Telegram bot API token
+    chat_id: "YOUR_CHAT_ID"      # Local test Telegram chat ID
+    timeout: 5                   # Request timeout in seconds

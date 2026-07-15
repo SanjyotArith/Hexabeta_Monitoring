@@ -25,4 +25,6 @@ class Notification:
     status: NotificationStatus
     created_at: str
     message: str
+    # Metadata is an extensible key-value mapping designed to support supplementary context
+    # (e.g., endpoints, failure details, trace directories) across generic/future notifier channels.
     metadata: Dict[str, Any] = field(default_factory=dict)

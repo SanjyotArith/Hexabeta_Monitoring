@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 from typing import Optional
 from app.evidence import EvidencePackage
 from app.collector import CollectorManager
+import socket
 
 @dataclass
 class Incident:
@@ -20,6 +21,12 @@ class Incident:
 _ACTIVE_INCIDENTS: dict[str, Incident] = {}
 _DAILY_COUNTERS: dict[str, int] = {}
 
+def _get_hostname_safely() -> str:
+    try:
+        return socket.gethostname()
+    except Exception:
+        return "Unknown"
+
 def _generate_incident_id() -> str:
     """
     Generates a sequential human-readable incident ID: INC-YYYYMMDD-XXXX
@@ -29,7 +36,7 @@ def _generate_incident_id() -> str:
     seq_num = _DAILY_COUNTERS[today_str]
     return f"INC-{today_str}-{seq_num:04d}"
 
-def create_incident(target_name: str, failure_reason: str, verification_attempts: int, config: dict, notifier=None) -> Incident:
+def create_incident(target_name: str, failure_reason: str, verification_attempts: int, config: dict, notifier=None, endpoint: Optional[str] = None) -> Incident:
     """
     Creates a new ACTIVE incident in memory for the target and triggers evidence collection.
     If an incident is already active for this target, returns it instead of creating a duplicate.
@@ -71,12 +78,26 @@ def create_incident(target_name: str, failure_reason: str, verification_attempts
     if notifier is not None:
         try:
             from app.notification import Notification, NotificationType, NotificationStatus
+            
+            # Format failure reason to be concise and operator-friendly
+            concise_reason = failure_reason.strip()
+            if not concise_reason:
+                concise_reason = "Unknown failure"
+                
             notification = Notification(
                 notification_type=NotificationType.INCIDENT_CREATED,
                 incident_id=incident.id,
                 target_name=target_name,
                 status=NotificationStatus.PENDING,
                 created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                metadata={
+                    "endpoint": endpoint or "N/A",
+                    "failure_reason": concise_reason,
+                    "incident_dir": f"incidents/{incident.id}",
+                    "incident_json": f"incidents/{incident.id}/incident.json",
+                    "evidence_package": "available" if incident.evidence else "none",
+                    "host": _get_hostname_safely()
+                },
                 message=(
                     f"HexaBlackBox Alert\n\n"
                     f"Incident Created\n\n"
@@ -105,7 +126,7 @@ def get_incident(target_name: str) -> Optional[Incident]:
     """
     return _ACTIVE_INCIDENTS.get(target_name)
 
-def resolve_incident(target_name: str, notifier=None) -> Optional[Incident]:
+def resolve_incident(target_name: str, notifier=None, endpoint: Optional[str] = None) -> Optional[Incident]:
     """
     Resolves an active incident for the target.
     Updates the incident status, calculates duration, serializes and persists it,
@@ -155,8 +176,13 @@ def resolve_incident(target_name: str, notifier=None) -> Optional[Incident]:
                 status=NotificationStatus.PENDING,
                 created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
                 metadata={
+                    "endpoint": endpoint or "N/A",
                     "duration_seconds": incident.duration_seconds,
-                    "resolved_at": incident.resolved_at
+                    "resolved_at": incident.resolved_at,
+                    "incident_dir": f"incidents/{incident.id}",
+                    "incident_json": f"incidents/{incident.id}/incident.json",
+                    "evidence_package": "available" if incident.evidence else "none",
+                    "host": _get_hostname_safely()
                 },
                 message=(
                     f"HexaBlackBox Recovery\n\n"
