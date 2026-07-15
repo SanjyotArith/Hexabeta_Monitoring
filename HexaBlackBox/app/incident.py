@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Optional
 from app.evidence import EvidencePackage
 from app.collector import CollectorManager
@@ -29,7 +29,7 @@ def _generate_incident_id() -> str:
     seq_num = _DAILY_COUNTERS[today_str]
     return f"INC-{today_str}-{seq_num:04d}"
 
-def create_incident(target_name: str, failure_reason: str, verification_attempts: int, config: dict) -> Incident:
+def create_incident(target_name: str, failure_reason: str, verification_attempts: int, config: dict, notifier=None) -> Incident:
     """
     Creates a new ACTIVE incident in memory for the target and triggers evidence collection.
     If an incident is already active for this target, returns it instead of creating a duplicate.
@@ -67,6 +67,30 @@ def create_incident(target_name: str, failure_reason: str, verification_attempts
         import sys
         print(f"Unexpected serialization block failure: {e}", file=sys.stderr, flush=True)
         
+    # Dispatch notification alert if notifier is configured
+    if notifier is not None:
+        try:
+            from app.notification import Notification, NotificationType, NotificationStatus
+            notification = Notification(
+                notification_type=NotificationType.INCIDENT_CREATED,
+                incident_id=incident.id,
+                target_name=target_name,
+                status=NotificationStatus.PENDING,
+                created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                message=(
+                    f"HexaBlackBox Alert\n\n"
+                    f"Incident Created\n\n"
+                    f"Incident ID: {incident.id}\n"
+                    f"Target: {target_name}\n"
+                    f"Started At: {incident.started_at}\n"
+                    f"Status: ACTIVE"
+                )
+            )
+            notifier.notify(notification)
+        except Exception as e:
+            import sys
+            print(f"Failed to dispatch incident creation notification: {e}", file=sys.stderr, flush=True)
+
     return incident
 
 def is_incident_active(target_name: str) -> bool:
@@ -81,7 +105,7 @@ def get_incident(target_name: str) -> Optional[Incident]:
     """
     return _ACTIVE_INCIDENTS.get(target_name)
 
-def resolve_incident(target_name: str) -> Optional[Incident]:
+def resolve_incident(target_name: str, notifier=None) -> Optional[Incident]:
     """
     Resolves an active incident for the target.
     Updates the incident status, calculates duration, serializes and persists it,
@@ -120,4 +144,33 @@ def resolve_incident(target_name: str) -> Optional[Incident]:
     # 5. Remove the resolved incident from the active incident registry (after persistence completes, even if it fails)
     _ACTIVE_INCIDENTS.pop(target_name, None)
     
+    # 6. Dispatch notification alert if notifier is configured
+    if notifier is not None:
+        try:
+            from app.notification import Notification, NotificationType, NotificationStatus
+            notification = Notification(
+                notification_type=NotificationType.INCIDENT_RESOLVED,
+                incident_id=incident.id,
+                target_name=target_name,
+                status=NotificationStatus.PENDING,
+                created_at=datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ"),
+                metadata={
+                    "duration_seconds": incident.duration_seconds,
+                    "resolved_at": incident.resolved_at
+                },
+                message=(
+                    f"HexaBlackBox Recovery\n\n"
+                    f"Incident Resolved\n\n"
+                    f"Incident ID: {incident.id}\n"
+                    f"Target: {target_name}\n"
+                    f"Recovered At: {incident.resolved_at}\n"
+                    f"Duration: {incident.duration_seconds} seconds\n"
+                    f"Status: RESOLVED"
+                )
+            )
+            notifier.notify(notification)
+        except Exception as e:
+            import sys
+            print(f"Failed to dispatch incident resolution notification: {e}", file=sys.stderr, flush=True)
+            
     return incident

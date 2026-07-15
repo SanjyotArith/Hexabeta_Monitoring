@@ -1,14 +1,30 @@
 import sys
 from app.config import load_config
 from app.monitor import start_monitoring
+from app.notifier import NotificationManager
 
 def main():
     try:
         # Load and validate configuration
         config = load_config("config/config.yaml")
         
-        # Start the monitoring loop
-        start_monitoring(config)
+        # Instantiate NotificationManager explicitly
+        notifier = NotificationManager()
+        
+        # Register enabled providers based on configuration
+        notifier_config = config.get("notifier", {})
+        telegram_config = notifier_config.get("telegram", {})
+        if telegram_config.get("enabled", False):
+            from app.notifier.telegram import TelegramProvider
+            telegram_provider = TelegramProvider(
+                bot_token=telegram_config["bot_token"],
+                chat_id=telegram_config["chat_id"],
+                timeout=telegram_config.get("timeout", 5)
+            )
+            notifier.register_provider(telegram_provider)
+            
+        # Start the monitoring loop with injected notifier
+        start_monitoring(config, notifier=notifier)
         
     except KeyboardInterrupt:
         print("\nHexaBlackBox monitoring stopped by user. Exiting cleanly.")

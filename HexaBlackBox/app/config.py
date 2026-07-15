@@ -487,11 +487,74 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
 
         validated_collectors[coll_name] = validated_config
 
+    notifier_conf = config.get("notifier", {})
+    validated_notifier = {}
+    if not isinstance(notifier_conf, dict):
+        print("Error: 'notifier' configuration must be a dictionary", file=sys.stderr)
+        sys.exit(1)
+        return
+        
+    for provider_name, provider_val in notifier_conf.items():
+        if not isinstance(provider_val, dict):
+            print(f"Error: Notifier provider '{provider_name}' configuration must be a dictionary", file=sys.stderr)
+            sys.exit(1)
+            return
+            
+        enabled = provider_val.get("enabled", False)
+        if not isinstance(enabled, bool):
+            print(f"Error: Notifier provider '{provider_name}' enabled flag must be a boolean", file=sys.stderr)
+            sys.exit(1)
+            return
+            
+        validated_provider = {"enabled": enabled}
+        
+        if provider_name == "telegram":
+            bot_token = provider_val.get("bot_token")
+            chat_id = provider_val.get("chat_id")
+            timeout = provider_val.get("timeout", 5)
+            
+            if enabled:
+                if not isinstance(bot_token, str) or not bot_token:
+                    print("Error: telegram 'bot_token' must be a non-empty string when enabled", file=sys.stderr)
+                    sys.exit(1)
+                    return
+                if not isinstance(chat_id, str) or not chat_id:
+                    print("Error: telegram 'chat_id' must be a non-empty string when enabled", file=sys.stderr)
+                    sys.exit(1)
+                    return
+            else:
+                if bot_token is not None and not isinstance(bot_token, str):
+                    print("Error: telegram 'bot_token' must be a string", file=sys.stderr)
+                    sys.exit(1)
+                    return
+                if chat_id is not None and not isinstance(chat_id, str):
+                    print("Error: telegram 'chat_id' must be a string", file=sys.stderr)
+                    sys.exit(1)
+                    return
+                    
+            try:
+                timeout = int(timeout)
+                if timeout <= 0:
+                    raise ValueError
+            except (ValueError, TypeError):
+                print("Error: telegram 'timeout' must be an integer greater than zero", file=sys.stderr)
+                sys.exit(1)
+                return
+                
+            validated_provider.update({
+                "bot_token": bot_token,
+                "chat_id": chat_id,
+                "timeout": timeout
+            })
+            
+        validated_notifier[provider_name] = validated_provider
+
     return {
         "targets": validated_targets,
         "incident": {
             "verification_attempts": verification_attempts,
             "verification_delay": verification_delay
         },
-        "collectors": validated_collectors
+        "collectors": validated_collectors,
+        "notifier": validated_notifier
     }

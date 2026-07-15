@@ -23,7 +23,7 @@ def format_result(result) -> str:
         f"Reason: {reason_str}{suffix}"
     )
 
-def start_monitoring(config: dict):
+def start_monitoring(config: dict, notifier=None):
     """
     Continuous monitoring loop.
     Iterates sequentially through configured targets, runs checks, prints results,
@@ -49,7 +49,7 @@ def start_monitoring(config: dict):
                 
                 if result.status == "HEALTHY":
                     from app.incident import resolve_incident
-                    resolved_inc = resolve_incident(name)
+                    resolved_inc = resolve_incident(name, notifier=notifier)
                     if resolved_inc:
                         print(
                             f"\n--------------------------------------------------\n"
@@ -101,7 +101,7 @@ def start_monitoring(config: dict):
                         
                 if not verification_successful:
                     # Create active incident
-                    incident = create_incident(name, last_reason or "Unknown failure", attempts, config)
+                    incident = create_incident(name, last_reason or "Unknown failure", attempts, config, notifier=notifier)
                     fail_time = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
                     print(f"[{fail_time}] Target: {name} | Verification Failed | Creating Incident...", flush=True)
                     print(f"[{fail_time}] Target: {name} | Incident Created | Status: ACTIVE | Incident ID: {incident.id}", flush=True)
