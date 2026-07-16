@@ -27,8 +27,13 @@ def main():
             )
             notifier.register_provider(telegram_provider)
             
-        # Start the monitoring loop with injected notifier
-        start_monitoring(config, notifier=notifier)
+        # Instantiate RuntimeHealthManager and register core monitoring component
+        from app.health import RuntimeHealthManager
+        health_manager = RuntimeHealthManager()
+        health_manager.register_component("monitoring_loop")
+            
+        # Start the monitoring loop with injected notifier and health manager
+        start_monitoring(config, notifier=notifier, health_manager=health_manager)
         
     except KeyboardInterrupt:
         print("\nHexaBlackBox monitoring stopped by user. Exiting cleanly.")
