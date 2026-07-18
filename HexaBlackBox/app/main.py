@@ -34,8 +34,9 @@ def main():
         
         # Register Snapshot Providers
         from app.snapshot.engine import SnapshotEngine
-        from app.snapshot.providers import get_backend_provider
+        from app.snapshot.providers import get_backend_provider, get_nginx_provider
         SnapshotEngine.register_provider(get_backend_provider())
+        SnapshotEngine.register_provider(get_nginx_provider())
             
         # Start the monitoring loop with injected notifier and health manager
         start_monitoring(config, notifier=notifier, health_manager=health_manager)
