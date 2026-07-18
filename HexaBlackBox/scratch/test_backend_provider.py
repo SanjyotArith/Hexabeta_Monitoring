@@ -229,11 +229,14 @@ def test_launchd_evidence():
         assert launchd_art.status == "SUCCESS"
         assert launchd_art.exit_code == 0
         assert launchd_art.content == "com.hexa.backend details"
-        # Verify shell=False was used
+        # Verify shell=False and correct uid were used.
+        # The context has no launchd_uid configured, so the provider falls back
+        # to os.getuid() on POSIX or 501 on non-POSIX (Windows test runner).
+        expected_uid = os.getuid() if hasattr(os, "getuid") else 501
         launchd_call = False
         for call_args in mock_run.call_args_list:
             args, kwargs = call_args
-            if args and args[0] == ["launchctl", "print", f"gui/1000/com.hexa.backend"]:
+            if args and args[0] == ["launchctl", "print", f"gui/{expected_uid}/com.hexa.backend"]:
                 assert kwargs.get("shell") is False
                 assert kwargs.get("timeout") == 1.0
                 launchd_call = True
@@ -352,12 +355,14 @@ def test_port_evidence():
         assert lsof_call is True
         
     # 2. Port Not Listening (lsof returns exit code 1 / empty stdout)
+    # After the refinement fix, "no listener" now always produces explicit content.
     with patch("subprocess.run") as mock_run:
         mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
         res = provider.capture(context)
         port_art = next(a for a in res.artifacts if a.name == "port.txt")
-        assert port_art.status == "SUCCESS"  # The lsof check executed but returned empty
-        assert port_art.content == ""
+        assert port_art.status == "SUCCESS"
+        assert "Listening: false" in port_art.content
+        assert "Listener: none" in port_art.content
         
     print("PASSED")
 
@@ -540,36 +545,212 @@ def test_backward_compatibility():
 
 def test_observer_only_safety():
     print("11. Observer-Only Safety Audit ........ ", end="", flush=True)
-    # Verify no mutating process words exist inside app/snapshot/providers/backend.py
     backend_file = "app/snapshot/providers/backend.py"
-    mutating_terms = ["kill", "terminate", "hb-start", "hb-stop", "kickstart", "bootstrap", "bootout", "os.system"]
-    
+    # Terms that must NEVER appear in executable lines (comments are allowed).
+    comment_only_terms = {"kill", "terminate", "hb-start", "hb-stop",
+                          "kickstart", "bootstrap", "bootout"}
+    # Terms that must not appear anywhere in the file.
+    banned_anywhere = {"os.system"}
+
     with open(backend_file, "r") as f:
         content = f.read()
-        
-    # We must allow comments or method signatures but check if subprocess or mutating calls exist
-    # e.g., we check that "launchctl" is only print/read-only:
-    # "launchctl print" is the only arg array.
-    for term in mutating_terms:
-        # Exclude expected launchd print comment mentions
-        if term in ("bootstrap", "bootout", "kickstart", "kill"):
-            # Ensure they only occur inside comments (lines starting with # or within triple quotes)
-            lines = content.splitlines()
-            for idx, line in enumerate(lines):
-                if term in line:
-                    trimmed = line.strip()
-                    assert trimmed.startswith("#") or "NOTE:" in trimmed or "provider must NEVER" in trimmed or "Directly terminating" in trimmed, \
-                        f"Mutating term '{term}' found in executable line {idx+1}: {line}"
-        else:
-            assert term not in content, f"Banned mutating term '{term}' found in {backend_file}"
-            
+
+    for term in banned_anywhere:
+        assert term not in content, f"Banned term '{term}' found in {backend_file}"
+
+    lines = content.splitlines()
+    for term in comment_only_terms:
+        for idx, line in enumerate(lines):
+            if term in line:
+                trimmed = line.strip()
+                assert trimmed.startswith("#"), \
+                    f"Mutating/restricted term '{term}' found in non-comment line {idx+1}: {line}"
+
     print("PASSED")
+
+
+def _make_port_context(port: int = 8002) -> SnapshotContext:
+    """Helper: build a minimal SnapshotContext for port/launchd tests."""
+    return SnapshotContext(
+        incident_id="INC-REFINE",
+        target_name="Target",
+        config={
+            "snapshot": {
+                "providers": {
+                    "backend": {
+                        "network": {"port": port},
+                        "service": {
+                            "launchd_label": "com.hexa.backend",
+                            "launchd_uid": 501
+                        }
+                    }
+                }
+            }
+        },
+        evidence_dir="temp_dir",
+        timestamp=datetime.now(timezone.utc),
+        logger=MagicMock()
+    )
+
+
+# ── Refinement Test 12: Port listener present ─────────────────────────────────
+def test_port_listener_found():
+    print("12. Port Listener Found ................ ", end="", flush=True)
+    provider = MacOSBackendSnapshotProvider()
+    context = _make_port_context()
+
+    lsof_output = (
+        "COMMAND   PID     USER   FD   TYPE DEVICE SIZE/OFF NODE NAME\n"
+        "python3 61000 hexabeta    3u  IPv4  0x...      0t0  TCP 127.0.0.1:8002 (LISTEN)\n"
+    )
+
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=lsof_output, stderr="")
+        res = provider.capture(context)
+
+    port_art = next(a for a in res.artifacts if a.name == "port.txt")
+    assert port_art.status == "SUCCESS"
+    assert "61000" in port_art.content
+    assert "LISTEN" in port_art.content
+    assert "Listening: false" not in port_art.content   # it IS listening
+    assert port_art.bytes_captured > 0
+    print("PASSED")
+
+
+# ── Refinement Test 13: Port not listening -> port.txt still created ───────────
+def test_port_no_listener_creates_file():
+    print("13. Port No Listener -> file written ... ", end="", flush=True)
+    provider = MacOSBackendSnapshotProvider()
+    context = _make_port_context(port=8002)
+
+    with patch("subprocess.run") as mock_run:
+        # lsof exits 1 with no output — the normal "nothing listening" case
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
+        res = provider.capture(context)
+
+    port_art = next(a for a in res.artifacts if a.name == "port.txt")
+    assert port_art.status == "SUCCESS",  "no-listener must be SUCCESS, not FAILED"
+    assert "Listening: false" in port_art.content
+    assert "Listener: none" in port_art.content
+    assert "8002" in port_art.content
+    assert port_art.bytes_captured > 0
+    assert "no-listener" in port_art.capture_method
+    print("PASSED")
+
+
+# ── Refinement Test 14: lsof actual failure is distinguishable ───────────────
+def test_port_lsof_failure_distinguishable():
+    print("14. Port lsof Failure Distinguished ... ", end="", flush=True)
+    provider = MacOSBackendSnapshotProvider()
+    context = _make_port_context()
+
+    with patch("subprocess.run", side_effect=OSError("lsof not found")):
+        res = provider.capture(context)
+
+    port_art = next(a for a in res.artifacts if a.name == "port.txt")
+    assert port_art.status == "FAILED"
+    assert "lsof not found" in port_art.error_message
+    assert port_art.content == ""
+    print("PASSED")
+
+
+# ── Refinement Test 15: launchctl uid uses configured value ──────────────────
+def test_launchctl_uid_from_config():
+    print("15. launchctl Uses Configured UID ...... ", end="", flush=True)
+    provider = MacOSBackendSnapshotProvider()
+    context = _make_port_context()  # has launchd_uid: 501
+
+    captured_calls = []
+    def fake_run(cmd, **kwargs):
+        captured_calls.append(cmd)
+        return MagicMock(returncode=0, stdout="service info", stderr="")
+
+    with patch("subprocess.run", side_effect=fake_run):
+        provider.capture(context)
+
+    launchd_calls = [c for c in captured_calls if c and c[0] == "launchctl"]
+    assert len(launchd_calls) == 1
+    assert launchd_calls[0] == ["launchctl", "print", "gui/501/com.hexa.backend"], \
+        f"Unexpected launchctl command: {launchd_calls[0]}"
+    print("PASSED")
+
+
+# ── Refinement Test 16: launchctl service present -> captured correctly ───────
+def test_launchctl_service_present():
+    print("16. launchctl Service Present .......... ", end="", flush=True)
+    provider = MacOSBackendSnapshotProvider()
+    context = _make_port_context()
+
+    service_info = "com.hexa.backend = {\n  pid = 61000\n  status = 0\n}"
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=0, stdout=service_info, stderr="")
+        res = provider.capture(context)
+
+    launchd_art = next(a for a in res.artifacts if a.name == "launchd.txt")
+    assert launchd_art.status == "SUCCESS"
+    assert launchd_art.exit_code == 0
+    assert "pid = 61000" in launchd_art.content
+    print("PASSED")
+
+
+# ── Refinement Test 17: launchctl service absent -> valid forensic evidence ───
+def test_launchctl_service_absent_is_valid_evidence():
+    print("17. launchctl Service Absent -> kept .... ", end="", flush=True)
+    provider = MacOSBackendSnapshotProvider()
+    context = _make_port_context()
+
+    # macOS message when the LaunchAgent was unloaded by hb-stop
+    absent_output = 'Could not find service "com.hexa.backend" in domain for user gui: 501\n'
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1, stdout=absent_output, stderr="")
+        res = provider.capture(context)
+
+    launchd_art = next(a for a in res.artifacts if a.name == "launchd.txt")
+    # The command ran and returned output — this is SUCCESS (we captured the state).
+    # The exit code tells the analyst the service was gone.
+    assert launchd_art.status == "SUCCESS"
+    assert launchd_art.exit_code == 1
+    assert "Could not find service" in launchd_art.content
+    print("PASSED")
+
+
+# ── Refinement Test 18: launchctl actual execution failure ───────────────────
+def test_launchctl_execution_failure():
+    print("18. launchctl Execution Failure ........ ", end="", flush=True)
+    provider = MacOSBackendSnapshotProvider()
+    context = _make_port_context()
+
+    with patch("subprocess.run", side_effect=OSError("launchctl not found")):
+        res = provider.capture(context)
+
+    launchd_art = next(a for a in res.artifacts if a.name == "launchd.txt")
+    assert launchd_art.status == "FAILED"
+    assert "launchctl not found" in launchd_art.error_message
+    assert launchd_art.content == ""
+    print("PASSED")
+
+
+# ── Refinement Test 19: launchctl timeout ────────────────────────────────────
+def test_launchctl_timeout():
+    print("19. launchctl Timeout .................. ", end="", flush=True)
+    provider = MacOSBackendSnapshotProvider()
+    context = _make_port_context()
+
+    with patch("subprocess.run", side_effect=subprocess.TimeoutExpired(cmd=["launchctl"], timeout=1.0)):
+        res = provider.capture(context)
+
+    launchd_art = next(a for a in res.artifacts if a.name == "launchd.txt")
+    assert launchd_art.status == "TIMEOUT"
+    assert "timed out" in launchd_art.error_message
+    print("PASSED")
+
 
 def main():
     print("==================================================")
     print("Starting Type 1 Verification (Milestone 9 - Batch 2)")
     print("==================================================")
     try:
+        # Original 11 tests
         test_structured_artifact_model()
         test_bounded_log_capture()
         test_redaction()
@@ -581,6 +762,15 @@ def main():
         test_path_traversal_security()
         test_backward_compatibility()
         test_observer_only_safety()
+        # Refinement tests (Type 2 improvements)
+        test_port_listener_found()
+        test_port_no_listener_creates_file()
+        test_port_lsof_failure_distinguishable()
+        test_launchctl_uid_from_config()
+        test_launchctl_service_present()
+        test_launchctl_service_absent_is_valid_evidence()
+        test_launchctl_execution_failure()
+        test_launchctl_timeout()
         print("\n==================================================")
         print("ALL CHECKS PASSED")
         print("TYPE 1 VERIFIED")

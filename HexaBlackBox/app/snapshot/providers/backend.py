@@ -63,6 +63,11 @@ class MacOSBackendSnapshotProvider(BackendSnapshotProvider):
         
         service_config = provider_config.get("service", {})
         launchd_label = service_config.get("launchd_label", "com.hexa.backend")
+        # launchd_uid must match the GUI session user that owns the LaunchAgent.
+        # On macOS this is typically the UID of the logged-in user (e.g. 501),
+        # which may differ from the UID of the process running HexaBlackBox.
+        # Configure service.launchd_uid in config.yaml to set this explicitly.
+        launchd_uid = service_config.get("launchd_uid", os.getuid() if hasattr(os, "getuid") else 501)
         
         network_config = provider_config.get("network", {})
         port = network_config.get("port", 8002)
@@ -182,8 +187,10 @@ class MacOSBackendSnapshotProvider(BackendSnapshotProvider):
             ))
 
         # Artifact 3: launchd.txt
-        uid = os.getuid() if hasattr(os, "getuid") else 1000
-        launchd_cmd = ["launchctl", "print", f"gui/{uid}/{launchd_label}"]
+        # Use the configured launchd_uid (resolved at config load time above).
+        # If the service is unloaded after hb-stop, launchctl will report it as
+        # missing — that output is preserved verbatim as valid forensic evidence.
+        launchd_cmd = ["launchctl", "print", f"gui/{launchd_uid}/{launchd_label}"]
         artifacts.append(run_cmd("launchd.txt", launchd_cmd, "launchctl-print"))
 
         # Artifact 4: processes.txt
@@ -246,9 +253,59 @@ class MacOSBackendSnapshotProvider(BackendSnapshotProvider):
             ))
 
         # Artifact 5: port.txt
-        # Using -n and -P to bypass DNS and port name mappings
-        port_cmd = ["lsof", "-n", "-P", "-i", f"tcp:{port}"]
-        artifacts.append(run_cmd("port.txt", port_cmd, "lsof-port"))
+        # lsof exits with code 1 and empty output when nothing listens on the port.
+        # "No listener" is a successful forensic observation — not a failure.
+        # We always produce content so port.txt is always written to disk.
+        port_start = time.perf_counter()
+        try:
+            port_cmd = ["lsof", "-n", "-P", "-i", f"tcp:{port}"]
+            res = subprocess.run(port_cmd, capture_output=True, text=True, shell=False, timeout=1.0)
+            duration = round((time.perf_counter() - port_start) * 1000, 2)
+
+            if res.returncode == 0 and res.stdout.strip():
+                # Listener found — capture the raw lsof output.
+                sanitized = redact_content(res.stdout)
+                port_content = sanitized
+                port_note = "listener-found"
+            else:
+                # lsof exited with 1 (no match) or returned empty output.
+                # This is a successful read: nothing is listening.
+                port_content = f"Port: {port}\nListening: false\nListener: none\n"
+                port_note = "no-listener"
+
+            artifacts.append(CapturedArtifact(
+                name="port.txt",
+                content=port_content,
+                status="SUCCESS",
+                capture_method=f"lsof-port ({port_note})",
+                captured_at=datetime.now(timezone.utc),
+                duration_ms=duration,
+                exit_code=res.returncode,
+                bytes_captured=len(port_content.encode("utf-8")),
+                lines_captured=len(port_content.splitlines())
+            ))
+        except subprocess.TimeoutExpired:
+            duration = round((time.perf_counter() - port_start) * 1000, 2)
+            artifacts.append(CapturedArtifact(
+                name="port.txt",
+                content="",
+                status="TIMEOUT",
+                capture_method="lsof-port",
+                captured_at=datetime.now(timezone.utc),
+                duration_ms=duration,
+                error_message="lsof command timed out"
+            ))
+        except Exception as e:
+            duration = round((time.perf_counter() - port_start) * 1000, 2)
+            artifacts.append(CapturedArtifact(
+                name="port.txt",
+                content="",
+                status="FAILED",
+                capture_method="lsof-port",
+                captured_at=datetime.now(timezone.utc),
+                duration_ms=duration,
+                error_message=str(e)
+            ))
 
         # Determine overall provider status based on individual results
         success_count = sum(1 for a in artifacts if a.status == "SUCCESS")
