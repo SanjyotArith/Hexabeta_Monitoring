@@ -4,8 +4,8 @@ import json
 import logging
 import concurrent.futures
 from datetime import datetime, timezone
-from typing import List, Dict
-from app.snapshot.models import SnapshotContext, SnapshotProvider, SnapshotResult
+from typing import List, Dict, Any
+from app.snapshot.models import SnapshotContext, SnapshotProvider, SnapshotResult, CapturedArtifact, ProviderCaptureResult
 
 class SnapshotEngine:
     _providers: List[SnapshotProvider] = []
@@ -18,6 +18,18 @@ class SnapshotEngine:
         """
         if provider not in cls._providers:
             cls._providers.append(provider)
+
+    @classmethod
+    def _validate_name(cls, name: str) -> bool:
+        """
+        Ensures a name contains no absolute paths or path traversal escape sequences.
+        """
+        if not name:
+            return False
+        # Reject absolute paths or parent directory traversal sequences
+        if ".." in name or "/" in name or "\\" in name or os.path.isabs(name):
+            return False
+        return True
 
     @classmethod
     def run(cls, incident_id: str, target_name: str, config: dict) -> Dict:
@@ -39,6 +51,18 @@ class SnapshotEngine:
         snapshot_config = config.get("snapshot", {})
         
         for provider in cls._providers:
+            # Strictly validate provider name to prevent directory traversal
+            if not cls._validate_name(provider.name):
+                cls._logger.error(f"Security Warning: Rejected invalid provider name: {provider.name}")
+                failed_count += 1
+                results.append(SnapshotResult(
+                    provider_name=provider.name,
+                    status="FAILED",
+                    execution_time_ms=0.0,
+                    error_message="Invalid/unsafe provider name blocked"
+                ))
+                continue
+
             provider_config = snapshot_config.get(provider.name, {})
             # By default, providers are enabled unless explicitly set to false
             enabled = provider_config.get("enabled", True)
@@ -72,8 +96,62 @@ class SnapshotEngine:
                     # Block until done or timeout reached
                     captured_data = future.result(timeout=timeout)
                 
-                # Option B: Engine manages storage and directory file creation
-                if captured_data:
+                # Check for new structured ProviderCaptureResult object
+                if isinstance(captured_data, ProviderCaptureResult):
+                    total_bytes = 0
+                    artifact_details = []
+                    
+                    for artifact in captured_data.artifacts:
+                        # Strictly validate artifact name to prevent directory traversal
+                        if not cls._validate_name(artifact.name):
+                            cls._logger.error(f"Security Warning: Blocked unsafe artifact name: {artifact.name}")
+                            continue
+                            
+                        # Write artifact file if status is SUCCESS and content is present
+                        if artifact.status == "SUCCESS" and artifact.content:
+                            artifact_path = os.path.join(provider_dir, artifact.name)
+                            with open(artifact_path, "w", encoding="utf-8") as f:
+                                f.write(artifact.content)
+                            total_bytes += len(artifact.content.encode("utf-8"))
+                            
+                        # Build metadata properties for this artifact
+                        detail = {
+                            "name": artifact.name,
+                            "status": artifact.status,
+                            "captured_at": artifact.captured_at.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                            "duration_ms": artifact.duration_ms,
+                            "bytes_captured": artifact.bytes_captured,
+                            "lines_captured": artifact.lines_captured,
+                            "truncated": artifact.truncated,
+                            "redaction_applied": artifact.redaction_applied
+                        }
+                        if artifact.exit_code is not None:
+                            detail["exit_code"] = artifact.exit_code
+                        if artifact.error_message:
+                            detail["error_message"] = artifact.error_message
+                        if artifact.capture_method:
+                            detail["capture_method"] = artifact.capture_method
+                            
+                        artifact_details.append(detail)
+                    
+                    # Localized metadata sidecar file
+                    metadata = {
+                        "captured_at": context.timestamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+                        "provider": provider.name,
+                        "status": captured_data.status,
+                        "duration_ms": round((time.perf_counter() - provider_start) * 1000, 2),
+                        "artifacts": artifact_details,
+                        "bytes_written": total_bytes
+                    }
+                    metadata_path = os.path.join(provider_dir, "metadata.json")
+                    with open(metadata_path, "w", encoding="utf-8") as f:
+                        json.dump(metadata, f, indent=2)
+                    
+                    status = captured_data.status
+                    successful_count += 1
+                    
+                # Backward Compatibility: Handle raw string returns (Batch 1 behavior)
+                elif isinstance(captured_data, str) and captured_data:
                     output_file_name = "capture.log"
                     output_path = os.path.join(provider_dir, output_file_name)
                     with open(output_path, "w", encoding="utf-8") as f:
@@ -92,7 +170,11 @@ class SnapshotEngine:
                     with open(metadata_path, "w", encoding="utf-8") as f:
                         json.dump(metadata, f, indent=2)
                         
-                successful_count += 1
+                    successful_count += 1
+                else:
+                    status = "FAILED"
+                    error_msg = "Provider returned empty or invalid payload structure"
+                    failed_count += 1
                 
             except concurrent.futures.TimeoutError:
                 status = "TIMEOUT"
