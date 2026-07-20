@@ -1,6 +1,6 @@
 import sys
 from typing import Optional
-from app.incident import Incident, create_incident
+from app.incident import Incident, create_incident, is_incident_active
 from app.snapshot.engine import SnapshotEngine
 
 class IncidentWorkflow:
@@ -19,6 +19,9 @@ class IncidentWorkflow:
         notifier=None,
         endpoint: Optional[str] = None
     ) -> Incident:
+        # Check if an incident is already active for this target
+        was_active = is_incident_active(target_name)
+        
         # Step 1: Create incident (writes incident.json, dispatches telegram alert)
         incident = create_incident(
             target_name=target_name,
@@ -29,10 +32,11 @@ class IncidentWorkflow:
             endpoint=endpoint
         )
         
-        # Step 2: Execute Snapshot Engine to capture volatile diagnostics
-        try:
-            SnapshotEngine.run(incident.id, target_name, config)
-        except Exception as e:
-            print(f"Snapshot Engine run failed: {e}", file=sys.stderr, flush=True)
+        # Step 2: Execute Snapshot Engine to capture volatile diagnostics (only for new incidents)
+        if not was_active:
+            try:
+                SnapshotEngine.run(incident.id, target_name, config)
+            except Exception as e:
+                print(f"Snapshot Engine run failed: {e}", file=sys.stderr, flush=True)
             
         return incident

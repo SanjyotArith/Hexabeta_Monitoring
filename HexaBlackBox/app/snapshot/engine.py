@@ -14,9 +14,9 @@ class SnapshotEngine:
     @classmethod
     def register_provider(cls, provider: SnapshotProvider) -> None:
         """
-        Registers a snapshot provider.
+        Registers a snapshot provider. Enforces provider name uniqueness.
         """
-        if provider not in cls._providers:
+        if not any(p.name == provider.name for p in cls._providers):
             cls._providers.append(provider)
 
     @classmethod
@@ -30,6 +30,33 @@ class SnapshotEngine:
         if ".." in name or "/" in name or "\\" in name or os.path.isabs(name):
             return False
         return True
+
+    @classmethod
+    def _write_atomic(cls, file_path: str, content: Any, is_json: bool = False) -> None:
+        """
+        Writes content to a temporary file in the same directory and replaces the target file atomically.
+        Cleans up the temporary file if the write or replacement fails.
+        """
+        directory = os.path.dirname(file_path)
+        base_name = os.path.basename(file_path)
+        # Hidden temp file pattern
+        temp_path = os.path.join(directory, f".{base_name}.tmp")
+        
+        try:
+            if is_json:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    json.dump(content, f, indent=2)
+            else:
+                with open(temp_path, "w", encoding="utf-8") as f:
+                    f.write(content)
+            os.replace(temp_path, file_path)
+        except Exception as e:
+            if os.path.exists(temp_path):
+                try:
+                    os.remove(temp_path)
+                except Exception:
+                    pass
+            raise e
 
     @classmethod
     def run(cls, incident_id: str, target_name: str, config: dict) -> Dict:
@@ -110,9 +137,13 @@ class SnapshotEngine:
                         # Write artifact file if status is SUCCESS and content is present
                         if artifact.status == "SUCCESS" and artifact.content:
                             artifact_path = os.path.join(provider_dir, artifact.name)
-                            with open(artifact_path, "w", encoding="utf-8") as f:
-                                f.write(artifact.content)
-                            total_bytes += len(artifact.content.encode("utf-8"))
+                            try:
+                                cls._write_atomic(artifact_path, artifact.content)
+                                total_bytes += len(artifact.content.encode("utf-8"))
+                            except Exception as write_err:
+                                cls._logger.error(f"Failed to write artifact {artifact.name} atomically: {write_err}")
+                                artifact.status = "FAILED"
+                                artifact.error_message = f"Atomic write failed: {write_err}"
                             
                         # Build metadata properties for this artifact
                         detail = {
@@ -144,8 +175,10 @@ class SnapshotEngine:
                         "bytes_written": total_bytes
                     }
                     metadata_path = os.path.join(provider_dir, "metadata.json")
-                    with open(metadata_path, "w", encoding="utf-8") as f:
-                        json.dump(metadata, f, indent=2)
+                    try:
+                        cls._write_atomic(metadata_path, metadata, is_json=True)
+                    except Exception as meta_err:
+                        cls._logger.error(f"Failed to write metadata.json atomically: {meta_err}")
                     
                     status = captured_data.status
                     successful_count += 1
@@ -154,8 +187,10 @@ class SnapshotEngine:
                 elif isinstance(captured_data, str) and captured_data:
                     output_file_name = "capture.log"
                     output_path = os.path.join(provider_dir, output_file_name)
-                    with open(output_path, "w", encoding="utf-8") as f:
-                        f.write(captured_data)
+                    try:
+                        cls._write_atomic(output_path, captured_data)
+                    except Exception as write_err:
+                        cls._logger.error(f"Failed to write capture.log atomically: {write_err}")
                     output_file = f"evidence/{provider.name}/{output_file_name}"
                     
                     # Localized metadata sidecar file
@@ -167,8 +202,10 @@ class SnapshotEngine:
                         "bytes_written": len(captured_data.encode("utf-8"))
                     }
                     metadata_path = os.path.join(provider_dir, "metadata.json")
-                    with open(metadata_path, "w", encoding="utf-8") as f:
-                        json.dump(metadata, f, indent=2)
+                    try:
+                        cls._write_atomic(metadata_path, metadata, is_json=True)
+                    except Exception as meta_err:
+                        cls._logger.error(f"Failed to write metadata.json atomically: {meta_err}")
                         
                     successful_count += 1
                 else:
@@ -222,7 +259,9 @@ class SnapshotEngine:
         
         # Save manifest.json under evidence/
         manifest_path = os.path.join(evidence_dir, "manifest.json")
-        with open(manifest_path, "w", encoding="utf-8") as f:
-            json.dump(manifest, f, indent=2)
+        try:
+            cls._write_atomic(manifest_path, manifest, is_json=True)
+        except Exception as manifest_err:
+            cls._logger.error(f"Failed to write manifest.json atomically: {manifest_err}")
             
         return manifest
