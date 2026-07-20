@@ -5,6 +5,7 @@ import json
 import shutil
 import subprocess
 import re
+import yaml
 from datetime import datetime, timezone
 from unittest.mock import patch, MagicMock
 
@@ -577,6 +578,93 @@ def test_engine_integration():
         
     print("PASSED")
 
+# Test 10: Binary Path and load_config integration
+def test_binary_path_and_load_config_integration():
+    print("10. Config Override & Binary Path ...... ", end="", flush=True)
+    from app.config import load_config
+    
+    # 1. Create a temporary config folder
+    temp_dir = "temp_config_test"
+    os.makedirs(temp_dir, exist_ok=True)
+    
+    base_cfg = {
+        "targets": [{"name": "Test", "endpoint": "http://localhost:8002/api/health"}],
+        "incident": {"verification_attempts": 2, "verification_delay": 2},
+        "collectors": {
+            "cloudflared": {
+                "enabled": True,
+                "tunnel_name": "mac-mini",
+                "config_path": "/Users/hexabeta/.cloudflared/config.yml",
+                "log_path": "/Users/hexabeta/.cloudflared/cloudflared.log",
+                "log_lines": 50
+            }
+        }
+    }
+    
+    local_cfg = {
+        "snapshot": {
+            "providers": {
+                "backend": {
+                    "service": {
+                        "launchd_uid": 501
+                    }
+                },
+                "cloudflared": {
+                    "enabled": True,
+                    "binary_path": "/opt/homebrew/bin/cloudflared",
+                    "public_hostnames": ["hexabeta.com"],
+                    "local_origin_url": "http://127.0.0.1:8002/api/health"
+                }
+            }
+        }
+    }
+    
+    cfg_file = os.path.join(temp_dir, "config.yaml")
+    local_cfg_file = os.path.join(temp_dir, "config.local.yaml")
+    
+    try:
+        with open(cfg_file, "w", encoding="utf-8") as f:
+            yaml.dump(base_cfg, f)
+        with open(local_cfg_file, "w", encoding="utf-8") as f:
+            yaml.dump(local_cfg, f)
+            
+        config = load_config(cfg_file)
+        
+        # 1. Assert override integration worked
+        assert "snapshot" in config
+        assert config["snapshot"]["providers"]["backend"]["service"]["launchd_uid"] == 501
+        assert config["snapshot"]["providers"]["cloudflared"]["public_hostnames"] == ["hexabeta.com"]
+        assert config["snapshot"]["providers"]["cloudflared"]["binary_path"] == "/opt/homebrew/bin/cloudflared"
+        
+        # 2. Assert provider uses the absolute path
+        provider = MacOSCloudflaredSnapshotProvider()
+        context = SnapshotContext(
+            incident_id="INC-CF-OVERRIDE-BP",
+            target_name="Target",
+            config=config,
+            evidence_dir="temp_dir",
+            timestamp=datetime.now(timezone.utc),
+            logger=MagicMock()
+        )
+        
+        # Setup mocks to verify status uses the absolute binary path
+        with patch("subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0, stdout="Tunnel Info Output", stderr="")
+            with patch("app.snapshot.providers.cloudflared._tail_file", return_value=("", False, 0, 0)):
+                provider.capture(context)
+                
+            # Verify status command used /opt/homebrew/bin/cloudflared
+            mock_run.assert_any_call(
+                ["/opt/homebrew/bin/cloudflared", "tunnel", "info", "mac-mini"],
+                capture_output=True, text=True, shell=False, timeout=5.0
+            )
+            
+    finally:
+        if os.path.exists(temp_dir):
+            shutil.rmtree(temp_dir)
+            
+    print("PASSED")
+
 def main():
     print("==================================================")
     print("Starting Type 1 Verification (Milestone 9 - Batch 5)")
@@ -592,6 +680,7 @@ def main():
         test_static_code_audit()
         test_config_fallback()
         test_engine_integration()
+        test_binary_path_and_load_config_integration()
         
         print("\n==================================================")
         print("ALL CHECKS PASSED")

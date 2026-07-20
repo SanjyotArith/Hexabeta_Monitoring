@@ -558,7 +558,8 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
             
         validated_notifier[provider_name] = validated_provider
 
-    return {
+    # Build return config dict preserving any optional keys like 'snapshot'
+    result_config = {
         "targets": validated_targets,
         "incident": {
             "verification_attempts": verification_attempts,
@@ -567,3 +568,6 @@ def load_config(config_path: str = "config/config.yaml") -> dict:
         "collectors": validated_collectors,
         "notifier": validated_notifier
     }
+    if "snapshot" in config:
+        result_config["snapshot"] = config["snapshot"]
+    return result_config

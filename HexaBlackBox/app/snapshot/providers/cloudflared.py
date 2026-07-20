@@ -136,6 +136,7 @@ class MacOSCloudflaredSnapshotProvider(CloudflaredSnapshotProvider):
 
         tunnel_name      = provider_config.get("tunnel_name")    or collectors_cf.get("tunnel_name", "")
         log_path         = provider_config.get("log_path")       or collectors_cf.get("log_path", "")
+        binary_path      = provider_config.get("binary_path")    or collectors_cf.get("binary_path", "cloudflared")
         config_path      = provider_config.get("config_path")    or collectors_cf.get("config_path", "")  # kept for reference; never opened
         max_lines        = provider_config.get("max_lines",       collectors_cf.get("log_lines", 500))
         max_bytes        = provider_config.get("max_bytes",       1048576)
@@ -228,7 +229,7 @@ class MacOSCloudflaredSnapshotProvider(CloudflaredSnapshotProvider):
                 ts_method  = "skipped"
                 ts_exit    = None
             else:
-                cmd = ["cloudflared", "tunnel", "info", tunnel_name]
+                cmd = [binary_path, "tunnel", "info", tunnel_name]
                 res = subprocess.run(
                     cmd, capture_output=True, text=True, shell=False, timeout=status_timeout
                 )
