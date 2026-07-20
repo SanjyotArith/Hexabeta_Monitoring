@@ -2,6 +2,7 @@ import os
 import time
 import json
 import logging
+import shutil
 import concurrent.futures
 from datetime import datetime, timezone
 from typing import List, Dict, Any
@@ -59,6 +60,31 @@ class SnapshotEngine:
             raise e
 
     @classmethod
+    def _write_failure_metadata(
+        cls,
+        provider_dir: str,
+        provider_name: str,
+        status: str,
+        error_message: str,
+        provider_start: float,
+        timestamp: datetime,
+    ) -> None:
+        metadata = {
+            "captured_at": timestamp.strftime("%Y-%m-%dT%H:%M:%SZ"),
+            "provider": provider_name,
+            "status": status,
+            "duration_ms": round((time.perf_counter() - provider_start) * 1000, 2),
+            "artifacts": [],
+            "bytes_written": 0,
+            "error_message": error_message
+        }
+        metadata_path = os.path.join(provider_dir, "metadata.json")
+        try:
+            cls._write_atomic(metadata_path, metadata, is_json=True)
+        except Exception as e:
+            cls._logger.error(f"Failed to write failure metadata.json atomically: {e}")
+
+    @classmethod
     def run(cls, incident_id: str, target_name: str, config: dict) -> Dict:
         """
         Executes all registered snapshot providers and writes the manifest.json file.
@@ -98,9 +124,15 @@ class SnapshotEngine:
                 
             timeout = provider_config.get("timeout_seconds", provider.timeout_seconds)
             
-            # Create a dedicated directory for the provider
+            # Create/Clean provider directory to ensure no stale files from a previous run survive
             provider_dir = os.path.join(evidence_dir, provider.name)
-            os.makedirs(provider_dir, exist_ok=True)
+            try:
+                if os.path.exists(provider_dir):
+                    shutil.rmtree(provider_dir)
+                os.makedirs(provider_dir, exist_ok=True)
+            except Exception as e:
+                cls._logger.error(f"Failed to clean provider directory {provider_dir}: {e}")
+                os.makedirs(provider_dir, exist_ok=True)
             
             context = SnapshotContext(
                 incident_id=incident_id,
@@ -117,11 +149,14 @@ class SnapshotEngine:
             output_file = ""
             
             try:
-                # Enforce timeout using a ThreadPoolExecutor
-                with concurrent.futures.ThreadPoolExecutor(max_workers=1) as executor:
+                # Enforce timeout using a ThreadPoolExecutor without blocking on exit
+                executor = concurrent.futures.ThreadPoolExecutor(max_workers=1)
+                try:
                     future = executor.submit(provider.capture, context)
                     # Block until done or timeout reached
                     captured_data = future.result(timeout=timeout)
+                finally:
+                    executor.shutdown(wait=False)
                 
                 # Check for new structured ProviderCaptureResult object
                 if isinstance(captured_data, ProviderCaptureResult):
@@ -218,11 +253,13 @@ class SnapshotEngine:
                 error_msg = "Provider capture execution exceeded timeout"
                 failed_count += 1
                 cls._logger.warning(f"Provider {provider.name} timed out.")
+                cls._write_failure_metadata(provider_dir, provider.name, status, error_msg, provider_start, context.timestamp)
             except Exception as e:
                 status = "FAILED"
                 error_msg = str(e)
                 failed_count += 1
                 cls._logger.exception(f"Provider {provider.name} failed during execution.")
+                cls._write_failure_metadata(provider_dir, provider.name, status, error_msg, provider_start, context.timestamp)
             
             duration_ms = round((time.perf_counter() - provider_start) * 1000, 2)
             results.append(SnapshotResult(

@@ -287,6 +287,104 @@ def test_failure_isolation():
 
 
 # ══════════════════════════════════════════════════════════════════════════════
+# 5. PROVIDER TIMEOUT & STALE EVIDENCE
+# ══════════════════════════════════════════════════════════════════════════════
+def test_provider_timeout_and_stale_evidence():
+    label = "5. Provider timeout & stale evidence .... "
+    _reset_engine()
+
+    p_slow = DummyProvider("slow-prov")
+    # Mock capture to take 3.0s (longer than the 0.5s timeout)
+    def slow_capture(context):
+        time.sleep(3.0)
+        return ProviderCaptureResult(
+            provider_name="slow-prov",
+            status="SUCCESS",
+            artifacts=[
+                CapturedArtifact(
+                    name="info.txt",
+                    content="late-success-data",
+                    status="SUCCESS",
+                    capture_method="mock",
+                    captured_at=datetime.now(timezone.utc),
+                    duration_ms=3000.0,
+                    bytes_captured=17,
+                    lines_captured=1,
+                )
+            ],
+        )
+    p_slow.capture = slow_capture
+    SnapshotEngine.register_provider(p_slow)
+
+    incident_id = "INC-TIMEOUT-TEST"
+    evidence_root = os.path.join("incidents", incident_id)
+    shutil.rmtree(evidence_root, ignore_errors=True)
+
+    # 1. Populate the provider dir with stale SUCCESS evidence from a previous run
+    slow_dir = os.path.join(evidence_root, "evidence", "slow-prov")
+    os.makedirs(slow_dir, exist_ok=True)
+    
+    stale_artifact_path = os.path.join(slow_dir, "stale_artifact.txt")
+    with open(stale_artifact_path, "w") as f:
+        f.write("stale-data")
+        
+    stale_metadata_path = os.path.join(slow_dir, "metadata.json")
+    with open(stale_metadata_path, "w") as f:
+        json.dump({
+            "captured_at": "2026-07-20T00:00:00Z",
+            "provider": "slow-prov",
+            "status": "SUCCESS",
+            "duration_ms": 100.0,
+            "artifacts": [],
+            "bytes_written": 0
+        }, f)
+
+    # 2. Run the engine, configuring timeout_seconds: 0.5s for slow-prov
+    config = {
+        "snapshot": {
+            "slow-prov": {
+                "timeout_seconds": 0.5
+            }
+        }
+    }
+    
+    t_start = time.perf_counter()
+    manifest = SnapshotEngine.run(incident_id, "target", config)
+    t_elapsed = time.perf_counter() - t_start
+
+    # Assert the engine did not wait for the slow provider (elapsed time should be close to 0.5s, definitely < 2.0s)
+    assert t_elapsed < 2.0, f"Engine blocked! Took {t_elapsed:.2f} seconds, expected < 2.0s"
+
+    # Assert manifest correctly records TIMEOUT
+    slow_res = next(r for r in manifest["results"] if r["provider_name"] == "slow-prov")
+    assert slow_res["status"] == "TIMEOUT"
+    assert "exceeded timeout" in slow_res["error_message"]
+
+    # Assert stale artifact was deleted and is no longer present
+    assert not os.path.exists(stale_artifact_path), "Stale artifact survived cleanup!"
+
+    # Assert metadata.json was updated to record TIMEOUT
+    assert os.path.isfile(stale_metadata_path), "metadata.json was deleted but not rewritten"
+    with open(stale_metadata_path) as f:
+        curr_metadata = json.load(f)
+    assert curr_metadata["status"] == "TIMEOUT", f"Expected TIMEOUT status, got {curr_metadata['status']}"
+    assert len(curr_metadata["artifacts"]) == 0, "Stale artifacts are still listed in metadata.json"
+
+    # 3. Allow background thread to finish and verify it doesn't corrupt/overwrite the TIMEOUT state
+    time.sleep(3.0)
+    
+    # Assert metadata.json is still TIMEOUT (late thread did not overwrite it)
+    with open(stale_metadata_path) as f:
+        final_metadata = json.load(f)
+    assert final_metadata["status"] == "TIMEOUT"
+    assert not os.path.exists(os.path.join(slow_dir, "info.txt")), "Late thread wrote artifacts to disk!"
+
+    # Clean up evidence
+    shutil.rmtree(evidence_root, ignore_errors=True)
+    _ok(label)
+
+
+# ══════════════════════════════════════════════════════════════════════════════
 # REGRESSIONS
 # ══════════════════════════════════════════════════════════════════════════════
 def _run_regression(script: str) -> bool:
@@ -343,6 +441,7 @@ def main():
         test_duplicate_provider_registration,
         test_atomic_writes_and_cleanup,
         test_failure_isolation,
+        test_provider_timeout_and_stale_evidence,
         # Regression checks
         test_regression_backend,
         test_regression_nginx,
