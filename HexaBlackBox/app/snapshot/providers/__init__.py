@@ -46,3 +46,11 @@ def get_redis_provider() -> SnapshotProvider:
         return MacOSRedisSnapshotProvider()
     return LinuxRedisSnapshotProvider()
 
+def get_system_provider() -> SnapshotProvider:
+    """
+    Factory function resolving platform-specific SystemSnapshotProvider.
+    """
+    from app.snapshot.providers.system import MacOSSystemSnapshotProvider, LinuxSystemSnapshotProvider
+    if sys.platform == "darwin":
+        return MacOSSystemSnapshotProvider()
+    return LinuxSystemSnapshotProvider()
