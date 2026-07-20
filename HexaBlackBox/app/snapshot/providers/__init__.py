@@ -27,3 +27,12 @@ def get_postgres_provider() -> SnapshotProvider:
     if sys.platform == "darwin":
         return MacOSPostgreSQLSnapshotProvider()
     return LinuxPostgreSQLSnapshotProvider()
+
+def get_cloudflared_provider() -> SnapshotProvider:
+    """
+    Factory function resolving platform-specific CloudflaredSnapshotProvider.
+    """
+    from app.snapshot.providers.cloudflared import MacOSCloudflaredSnapshotProvider, LinuxCloudflaredSnapshotProvider
+    if sys.platform == "darwin":
+        return MacOSCloudflaredSnapshotProvider()
+    return LinuxCloudflaredSnapshotProvider()
