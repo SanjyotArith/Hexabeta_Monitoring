@@ -18,3 +18,12 @@ def get_nginx_provider() -> SnapshotProvider:
     if sys.platform == "darwin":
         return MacOSNginxSnapshotProvider()
     return LinuxNginxSnapshotProvider()
+
+def get_postgres_provider() -> SnapshotProvider:
+    """
+    Factory function resolving platform-specific PostgreSQLSnapshotProvider.
+    """
+    from app.snapshot.providers.postgres import MacOSPostgreSQLSnapshotProvider, LinuxPostgreSQLSnapshotProvider
+    if sys.platform == "darwin":
+        return MacOSPostgreSQLSnapshotProvider()
+    return LinuxPostgreSQLSnapshotProvider()
