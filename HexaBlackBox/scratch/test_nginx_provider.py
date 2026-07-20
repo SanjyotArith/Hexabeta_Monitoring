@@ -235,25 +235,56 @@ def test_port_evidence():
         logger=MagicMock()
     )
     
-    # Mock lsof for ports 80 and 443
-    # 80 is listening, 443 is down
-    lsof_80 = "nginx 500 root 6u IPv4 0x... 0t0 TCP *:80 (LISTEN)\n"
+    # Mocks representing different lsof returns
+    lsof_80_listen = "nginx 500 root 6u IPv4 0x... 0t0 TCP *:80 (LISTEN)\n"
+    lsof_443_listen = "nginx 500 root 7u IPv4 0x... 0t0 TCP *:443 (LISTEN)\n"
     
-    def fake_run(cmd, **kwargs):
-        if "80" in cmd[-1]:
-            return MagicMock(returncode=0, stdout=lsof_80, stderr="")
-        else:
-            return MagicMock(returncode=1, stdout="", stderr="")
-            
-    with patch("subprocess.run", side_effect=fake_run) as mock_run:
+    # 1. Test local LISTEN socket on port 80 and 443
+    def fake_run_listen(cmd, **kwargs):
+        assert "-sTCP:LISTEN" in cmd
+        if "80" in cmd[-2]:
+            return MagicMock(returncode=0, stdout=lsof_80_listen, stderr="")
+        elif "443" in cmd[-2]:
+            return MagicMock(returncode=0, stdout=lsof_443_listen, stderr="")
+        return MagicMock(returncode=1, stdout="", stderr="")
+        
+    with patch("subprocess.run", side_effect=fake_run_listen) as mock_run:
         res = provider.capture(context)
         
     port_art = next(a for a in res.artifacts if a.name == "ports.txt")
     assert port_art.status == "SUCCESS"
     assert "Port 80 Listening" in port_art.content
-    assert "Port: 443" in port_art.content
+    assert "Port 443 Listening" in port_art.content
+    assert "Listening: false" not in port_art.content
+
+    # 2. Test no local listener (lsof returns empty/exit-1)
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
+        res = provider.capture(context)
+    port_art = next(a for a in res.artifacts if a.name == "ports.txt")
+    assert port_art.status == "SUCCESS"
+    assert "Port: 80\nListening: false\nListener: none" in port_art.content
+    assert "Port: 443\nListening: false\nListener: none" in port_art.content
+
+    # 3. Test outbound established connection or closed connection
+    # Note: Because the implementation passes -sTCP:LISTEN, lsof will NOT return any ESTABLISHED/CLOSED connections.
+    # Therefore, lsof will return exit code 1 / empty output when only outbound connections exist on port 443.
+    # We mock lsof returning exit code 1 (no listen socket) in presence of only outbound connections:
+    with patch("subprocess.run") as mock_run:
+        mock_run.return_value = MagicMock(returncode=1, stdout="", stderr="")
+        res = provider.capture(context)
+    port_art = next(a for a in res.artifacts if a.name == "ports.txt")
+    assert port_art.status == "SUCCESS"
     assert "Listening: false" in port_art.content
+    assert "Listener: none" in port_art.content
     
+    # 4. Test actual lsof execution failure (OSError)
+    with patch("subprocess.run", side_effect=OSError("lsof not found")):
+        res = provider.capture(context)
+    port_art = next(a for a in res.artifacts if a.name == "ports.txt")
+    assert port_art.status == "FAILED"
+    assert "Check Failed" in port_art.content
+
     print("PASSED")
 
 # Test 5: nginx -t Validation

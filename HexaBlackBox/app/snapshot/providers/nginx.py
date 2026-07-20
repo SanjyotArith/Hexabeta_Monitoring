@@ -193,7 +193,7 @@ class MacOSNginxSnapshotProvider(NginxSnapshotProvider):
         
         for port in ports:
             try:
-                port_cmd = ["lsof", "-n", "-P", "-i", f"tcp:{port}"]
+                port_cmd = ["lsof", "-n", "-P", "-i", f"tcp:{port}", "-sTCP:LISTEN"]
                 res = subprocess.run(port_cmd, capture_output=True, text=True, shell=False, timeout=1.0)
                 if res.returncode == 0 and res.stdout.strip():
                     port_outputs.append(f"=== Port {port} Listening ===\n" + redact_content(res.stdout))
