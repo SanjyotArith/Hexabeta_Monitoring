@@ -36,3 +36,13 @@ def get_cloudflared_provider() -> SnapshotProvider:
     if sys.platform == "darwin":
         return MacOSCloudflaredSnapshotProvider()
     return LinuxCloudflaredSnapshotProvider()
+
+def get_redis_provider() -> SnapshotProvider:
+    """
+    Factory function resolving platform-specific RedisSnapshotProvider.
+    """
+    from app.snapshot.providers.redis import MacOSRedisSnapshotProvider, LinuxRedisSnapshotProvider
+    if sys.platform == "darwin":
+        return MacOSRedisSnapshotProvider()
+    return LinuxRedisSnapshotProvider()
+
