@@ -427,6 +427,11 @@ def test_regression_config():
     assert _run_regression("scratch/test_config_override.py"), "Config override regression FAILED"
     _ok(label)
 
+def test_regression_runtime():
+    label = "R8. Runtime provider regression ......... "
+    assert _run_regression("scratch/test_runtime_provider.py"), "Runtime regression FAILED"
+    _ok(label)
+
 
 # ══════════════════════════════════════════════════════════════════════════════
 # MAIN
@@ -450,6 +455,7 @@ def main():
         test_regression_redis,
         test_regression_system,
         test_regression_config,
+        test_regression_runtime,
     ]
 
     for test_fn in tests:

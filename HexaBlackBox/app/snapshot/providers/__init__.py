@@ -54,3 +54,10 @@ def get_system_provider() -> SnapshotProvider:
     if sys.platform == "darwin":
         return MacOSSystemSnapshotProvider()
     return LinuxSystemSnapshotProvider()
+
+def get_runtime_provider() -> SnapshotProvider:
+    """
+    Factory function resolving platform-specific RuntimeSnapshotProvider.
+    """
+    from app.snapshot.providers.runtime import RuntimeSnapshotProvider
+    return RuntimeSnapshotProvider()

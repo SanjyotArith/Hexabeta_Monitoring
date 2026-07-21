@@ -209,6 +209,9 @@ class SnapshotEngine:
                         "artifacts": artifact_details,
                         "bytes_written": total_bytes
                     }
+                    if hasattr(captured_data, "custom_runtime_metadata"):
+                        metadata["custom_runtime_metadata"] = captured_data.custom_runtime_metadata
+
                     metadata_path = os.path.join(provider_dir, "metadata.json")
                     try:
                         cls._write_atomic(metadata_path, metadata, is_json=True)

@@ -34,13 +34,14 @@ def main():
         
         # Register Snapshot Providers
         from app.snapshot.engine import SnapshotEngine
-        from app.snapshot.providers import get_backend_provider, get_nginx_provider, get_postgres_provider, get_cloudflared_provider, get_redis_provider, get_system_provider
+        from app.snapshot.providers import get_backend_provider, get_nginx_provider, get_postgres_provider, get_cloudflared_provider, get_redis_provider, get_system_provider, get_runtime_provider
         SnapshotEngine.register_provider(get_backend_provider())
         SnapshotEngine.register_provider(get_nginx_provider())
         SnapshotEngine.register_provider(get_postgres_provider())
         SnapshotEngine.register_provider(get_cloudflared_provider())
         SnapshotEngine.register_provider(get_redis_provider())
         SnapshotEngine.register_provider(get_system_provider())
+        SnapshotEngine.register_provider(get_runtime_provider())
             
         # Start the monitoring loop with injected notifier and health manager
         start_monitoring(config, notifier=notifier, health_manager=health_manager)
