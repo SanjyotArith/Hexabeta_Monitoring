@@ -106,10 +106,10 @@ def test_5_default_configuration():
         assert res.status == "SUCCESS"
         assert len(res.artifacts) == 5
         
-        # Verify launchctl command was called with standard fallback UID
+        # Verify launchctl command was called with the correct production default label
         launchctl_call = mock_run.call_args_list[0][0][0]
         assert "launchctl" in launchctl_call
-        assert "gui/501/com.hexablackbox.monitor" in launchctl_call or f"gui/{os.getuid()}/com.hexablackbox.monitor" in launchctl_call
+        assert "gui/501/com.hexa.backend" in launchctl_call or f"gui/{os.getuid()}/com.hexa.backend" in launchctl_call
     _ok(label)
 
 def test_6_config_override_loading():

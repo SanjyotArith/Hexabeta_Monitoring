@@ -115,8 +115,9 @@ class RuntimeSnapshotProvider(SnapshotProvider):
             .get("runtime", {})
         )
 
-        # Get launchd config or use sensible defaults
-        launchd_label = provider_cfg.get("launchd_label", "com.hexablackbox.monitor")
+        # Get launchd config or use sensible defaults.
+        # Default target is the production HexaBeta LaunchAgent.
+        launchd_label = provider_cfg.get("launchd_label", "com.hexa.backend")
         launchd_uid = provider_cfg.get("launchd_uid", os.getuid() if hasattr(os, "getuid") else 501)
         expected_command_contains = provider_cfg.get("expected_command_contains", ["uvicorn", "app.main:app"])
 

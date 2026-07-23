@@ -2,12 +2,124 @@ import os
 import sys
 import time
 import subprocess
+import urllib.request
+import urllib.error
 from datetime import datetime, timezone
 from typing import List, Optional, Any
 from app.snapshot.models import SnapshotContext, SnapshotProvider, CapturedArtifact, ProviderCaptureResult
 from app.snapshot.redaction import redact_content
 
 from app.snapshot.providers.utils import _tail_file
+
+# ---------------------------------------------------------------------------
+# HTTP Probe Helper
+# ---------------------------------------------------------------------------
+
+def _capture_http_probe(artifact_name: str, url: str, timeout: float) -> CapturedArtifact:
+    """
+    Execute a bounded forensic HTTP GET probe and record the observation.
+
+    CAPTURE STATUS vs OBSERVED RESULT:
+      - capture_status (CapturedArtifact.status) is always SUCCESS, meaning
+        HexaBlackBox successfully executed the probe and recorded the result.
+      - probe_result embedded in the content body records what the endpoint
+        actually returned: OK | TIMEOUT | HTTP_ERROR | CONNECTION_ERROR.
+
+    An endpoint returning 503 or timing out is a forensic observation, not a
+    provider failure. The Backend Provider's overall status is driven only by
+    whether HexaBlackBox itself could perform and write the capture.
+    """
+    t = time.perf_counter()
+    captured_at = datetime.now(timezone.utc)
+
+    try:
+        req = urllib.request.Request(url, method="GET")
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            http_status = resp.getcode()
+            # Read bounded body to avoid large payload capture
+            raw_body = resp.read(512).decode("utf-8", errors="replace")
+            duration_ms = round((time.perf_counter() - t) * 1000, 2)
+            content = (
+                f"url: {url}\n"
+                f"probe_result: OK\n"
+                f"http_status: {http_status}\n"
+                f"duration_ms: {duration_ms}\n"
+                f"body_excerpt: {raw_body[:200]}\n"
+            )
+            return CapturedArtifact(
+                name=artifact_name,
+                content=content,
+                status="SUCCESS",
+                capture_method="http-probe",
+                captured_at=captured_at,
+                duration_ms=duration_ms,
+                exit_code=http_status,
+                bytes_captured=len(content.encode("utf-8")),
+                lines_captured=len(content.splitlines()),
+            )
+
+    except urllib.error.HTTPError as e:
+        duration_ms = round((time.perf_counter() - t) * 1000, 2)
+        content = (
+            f"url: {url}\n"
+            f"probe_result: HTTP_ERROR\n"
+            f"http_status: {e.code}\n"
+            f"duration_ms: {duration_ms}\n"
+            f"error: {e.reason}\n"
+        )
+        return CapturedArtifact(
+            name=artifact_name,
+            content=content,
+            status="SUCCESS",
+            capture_method="http-probe",
+            captured_at=captured_at,
+            duration_ms=duration_ms,
+            exit_code=e.code,
+            bytes_captured=len(content.encode("utf-8")),
+            lines_captured=len(content.splitlines()),
+        )
+
+    except urllib.error.URLError as e:
+        duration_ms = round((time.perf_counter() - t) * 1000, 2)
+        reason = str(e.reason)
+        # Distinguish timeout (socket.timeout wrapped in URLError) from
+        # unreachable host or refused connection.
+        if "timed out" in reason.lower():
+            probe_result = "TIMEOUT"
+        else:
+            probe_result = "CONNECTION_ERROR"
+        content = (
+            f"url: {url}\n"
+            f"probe_result: {probe_result}\n"
+            f"duration_ms: {duration_ms}\n"
+            f"error: {reason}\n"
+        )
+        return CapturedArtifact(
+            name=artifact_name,
+            content=content,
+            status="SUCCESS",
+            capture_method="http-probe",
+            captured_at=captured_at,
+            duration_ms=duration_ms,
+            bytes_captured=len(content.encode("utf-8")),
+            lines_captured=len(content.splitlines()),
+        )
+
+    except Exception as e:
+        # Unexpected internal failure during probe construction or execution.
+        # Only in this case is the artifact status FAILED — HexaBlackBox
+        # itself could not complete the capture as intended.
+        duration_ms = round((time.perf_counter() - t) * 1000, 2)
+        return CapturedArtifact(
+            name=artifact_name,
+            content="",
+            status="FAILED",
+            capture_method="http-probe",
+            captured_at=captured_at,
+            duration_ms=duration_ms,
+            error_message=str(e),
+        )
+
 
 class BackendSnapshotProvider(SnapshotProvider):
     @property
@@ -275,7 +387,28 @@ class MacOSBackendSnapshotProvider(BackendSnapshotProvider):
                 error_message=str(e)
             ))
 
-        # Determine overall provider status based on individual results
+        # Artifact 6: probe_ping.txt
+        # Forensic HTTP probe — DB-free Uvicorn/FastAPI layer.
+        # capture_status is always SUCCESS: we successfully recorded the observation.
+        # probe_result records what the endpoint returned.
+        artifacts.append(_capture_http_probe(
+            artifact_name="probe_ping.txt",
+            url=f"http://localhost:{port}/ping",
+            timeout=2.0,
+        ))
+
+        # Artifact 7: probe_health.txt
+        # Forensic HTTP probe — Uvicorn + SQLAlchemy + PostgreSQL path.
+        # A timeout/error here combined with probe_ping.txt SUCCESS isolates the DB path.
+        artifacts.append(_capture_http_probe(
+            artifact_name="probe_health.txt",
+            url=f"http://localhost:{port}/api/health",
+            timeout=2.0,
+        ))
+
+        # Determine overall provider status based on individual results.
+        # Probe artifacts are always SUCCESS (capture succeeded); they do not
+        # count as provider failures regardless of observed endpoint result.
         success_count = sum(1 for a in artifacts if a.status == "SUCCESS")
         failure_count = sum(1 for a in artifacts if a.status in ("FAILED", "TIMEOUT"))
         
