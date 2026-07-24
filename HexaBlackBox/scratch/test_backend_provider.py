@@ -388,40 +388,58 @@ def test_partial_failures_and_timeouts():
     provider = MacOSBackendSnapshotProvider()
     
     with tempfile.TemporaryDirectory() as tmpdir:
+        # Override log paths in config so the test does not depend on host system logs (/Users/hexabeta/backend.log)
+        nonexistent_stdout = os.path.join(tmpdir, "nonexistent_stdout.log")
+        nonexistent_stderr = os.path.join(tmpdir, "nonexistent_stderr.log")
+        
+        config = {
+            "snapshot": {
+                "providers": {
+                    "backend": {
+                        "logs": {
+                            "stdout_path": nonexistent_stdout,
+                            "stderr_path": nonexistent_stderr,
+                        }
+                    }
+                }
+            }
+        }
+        
         context = SnapshotContext(
             incident_id="INC-FAIL-1",
             target_name="Target",
-            config={},
+            config=config,
             evidence_dir=tmpdir,
             timestamp=datetime.now(timezone.utc),
             logger=MagicMock()
         )
         
-        # 1. One failed command + others successful -> PARTIAL
-        # Probes are mocked to return CONNECTION_ERROR (capture_status=SUCCESS) so
-        # they do not contribute to the failure count.
+        # 1. Partial failure scenario:
+        # - stdout.log & stderr.log fail (source log files do not exist -> FAILED)
+        # - launchctl print times out (TimeoutExpired -> TIMEOUT)
+        # - processes.txt and port.txt succeed via subprocess mocks -> SUCCESS
+        # - probe_ping & probe_health succeed via _URLOPEN_CONN_REFUSED mock -> SUCCESS
+        # Overall status: 4 SUCCESS, 1 TIMEOUT, 2 FAILED -> PARTIAL
         with patch("subprocess.run") as mock_run, \
              patch("urllib.request.urlopen", side_effect=_URLOPEN_CONN_REFUSED):
-            # Simulate stdout logs missing, launchctl failed, processes success, port success
             mock_run.side_effect = [
-                MagicMock(returncode=1, stdout="", stderr="command error"), # launchctl print
-                MagicMock(returncode=0, stdout="PID COMMAND", stderr=""),     # ps
-                MagicMock(returncode=0, stdout="lsof details", stderr="")      # lsof
+                subprocess.TimeoutExpired(cmd=["launchctl"], timeout=1.0), # launchctl print times out -> TIMEOUT
+                MagicMock(returncode=0, stdout="PID COMMAND", stderr=""),   # ps -> SUCCESS
+                MagicMock(returncode=0, stdout="lsof details", stderr="")    # lsof -> SUCCESS
             ]
             
             res = provider.capture(context)
             assert res.status == "PARTIAL"
             
-        # 2. All artifacts failed -> FAILED
-        # Probes are mocked so only subprocess-based artifacts determine overall status.
-        # When subprocess crashes, logs/launchd/ps/port all FAIL → probes still SUCCESS
-        # → overall PARTIAL (not FAILED), because 2 artifacts (probes) succeed.
-        # We verify the status reflects this accurately.
+        # 2. Subprocess crash scenario:
+        # All subprocess calls crash with RuntimeError -> launchd/ps/port FAIL.
+        # Missing log files -> stdout/stderr FAIL.
+        # Probes succeed (CONNECTION_ERROR captured as SUCCESS).
+        # Overall status: 2 SUCCESS (probes), 5 FAILED -> PARTIAL
         with patch("subprocess.run", side_effect=RuntimeError("Generic shell crash")), \
              patch("urllib.request.urlopen", side_effect=_URLOPEN_CONN_REFUSED):
             res = provider.capture(context)
-            # Logs fail (files missing), subprocess artifacts fail, but 2 probes succeed
-            assert res.status in ("FAILED", "PARTIAL")
+            assert res.status == "PARTIAL"
         
     print("PASSED")
 
