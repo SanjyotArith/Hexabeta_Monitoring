@@ -303,5 +303,24 @@ class SnapshotEngine:
             cls._write_atomic(manifest_path, manifest, is_json=True)
         except Exception as manifest_err:
             cls._logger.error(f"Failed to write manifest.json atomically: {manifest_err}")
+
+        # M2 Unified Incident Timeline Generation
+        try:
+            from app.snapshot.timeline import TimelineGenerator
+            # Load incident.json payload if available for first-class incident metadata
+            incident_json_path = os.path.join(base_dir, "incident.json")
+            incident_payload = None
+            if os.path.isfile(incident_json_path):
+                try:
+                    with open(incident_json_path, "r", encoding="utf-8") as f:
+                        incident_payload = json.load(f)
+                except Exception:
+                    pass
+
+            timeline_dict, timeline_text = TimelineGenerator.build_timeline(evidence_dir, manifest, incident_payload)
+            cls._write_atomic(os.path.join(evidence_dir, "timeline.json"), timeline_dict, is_json=True)
+            cls._write_atomic(os.path.join(evidence_dir, "timeline.txt"), timeline_text)
+        except Exception as timeline_err:
+            cls._logger.error(f"Failed to generate M2 timeline: {timeline_err}", exc_info=True)
             
         return manifest
