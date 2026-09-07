@@ -70,6 +70,10 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
     DEBUG: bool = False
 
+    # --- Feature Flags ---
+    ENABLE_OPERATIONS_POLLER: bool = False
+    ENABLE_LOG_PUSHER: bool = False
+
     @property
     def full_report_url(self) -> str:
         """Construct the full URL for the HexaMonitor report endpoint."""

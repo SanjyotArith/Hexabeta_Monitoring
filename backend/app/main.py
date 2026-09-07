@@ -102,8 +102,16 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     reporter.start()
     queue_manager.start_worker()
     history_engine.start()
-    operations_poller.start()
-    log_pusher.start()
+
+    if settings.ENABLE_OPERATIONS_POLLER:
+        operations_poller.start()
+    else:
+        logger.info("Operations poller disabled by configuration (ENABLE_OPERATIONS_POLLER=false)")
+
+    if settings.ENABLE_LOG_PUSHER:
+        log_pusher.start()
+    else:
+        logger.info("Log pusher disabled by configuration (ENABLE_LOG_PUSHER=false)")
 
     yield  # Application runs
 
@@ -115,8 +123,12 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     await reporter.stop()
     await queue_manager.stop_worker()
     await history_engine.stop()
-    await operations_poller.stop()
-    await log_pusher.stop()
+
+    if settings.ENABLE_OPERATIONS_POLLER:
+        await operations_poller.stop()
+
+    if settings.ENABLE_LOG_PUSHER:
+        await log_pusher.stop()
 
 
 # ---------------------------------------------------------------------------
