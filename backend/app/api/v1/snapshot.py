@@ -1,5 +1,6 @@
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, Request, Depends
 from app.api.v1.operations import _AUDIT_RECORDS, _clean_stale_operations
+from app.api.deps import verify_agent_key
 
 router = APIRouter()
 
@@ -65,9 +66,13 @@ def _merge_operations_into_snapshot(snapshot_data):
     return snapshot_data
 
 @router.post("/push")
-async def push_snapshot(request: Request):
+async def push_snapshot(
+    request: Request,
+    _token: str = Depends(verify_agent_key),
+):
     """
     Accepts the snapshot JSON from HexaAgent and stores it in memory.
+    Requires a valid Bearer agent key.
     """
     global _LATEST_SNAPSHOT
     try:

@@ -1,5 +1,7 @@
+import hmac
+
 from fastapi import Depends, HTTPException, status, Header
-from fastapi.security import OAuth2PasswordBearer
+from fastapi.security import OAuth2PasswordBearer, HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.future import select
 import hashlib
@@ -8,9 +10,30 @@ from app.core.database import get_db
 from app.core.security import decode_token
 from app.models.users import User
 from app.models.infrastructure import Agent
+from app.core.config import settings
 
 # Standard OAuth2 scheme mapping to the login route
 oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+# Bearer scheme for agent key authentication
+_agent_bearer = HTTPBearer()
+
+
+async def verify_agent_key(
+    credentials: HTTPAuthorizationCredentials = Depends(_agent_bearer),
+) -> str:
+    """Validate a Bearer token against the configured AGENT_KEY.
+
+    Used by endpoints that receive data from HexaAgent instances
+    (e.g. snapshot push).  Returns the token string on success.
+    Raises 401 on missing / invalid credentials.
+    """
+    if not hmac.compare_digest(credentials.credentials, settings.AGENT_KEY):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Invalid agent key",
+        )
+    return credentials.credentials
 
 async def get_current_user(
     token: str = Depends(oauth2_scheme),
