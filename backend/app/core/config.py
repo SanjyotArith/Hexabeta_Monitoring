@@ -107,6 +107,20 @@ class Settings(BaseSettings):
     BACKEND_EXTERNAL_HEALTH_URL: str = "https://hexabeta.com/api/health"
     BACKEND_LAUNCH_LABEL: str = "com.hexa.backend"
 
+    # --- Docker Awareness ---
+    DOCKER_ENABLED: bool = True  # Allow Docker detection (degrades gracefully on macOS)
+    BACKEND_MODE: str = "auto"   # "auto" | "host" | "docker"
+    HEXABETA_BACKEND_CONTAINER_PATTERNS: str = "hexabeta_backend,hexabeta_backend_green"
+    DOCKER_COMMAND_TIMEOUT: int = 5  # Seconds for Docker CLI calls
+
+    @property
+    def backend_container_patterns(self) -> list[str]:
+        """Parse the comma-separated container patterns into a list."""
+        raw = self.HEXABETA_BACKEND_CONTAINER_PATTERNS.strip()
+        if not raw:
+            return []
+        return [p.strip() for p in raw.split(",") if p.strip()]
+
     # --- Phase 2A: PostgreSQL Provider ---
     POSTGRES_SERVICE: str = "postgresql@17"
     POSTGRES_PORT: int = 5432
