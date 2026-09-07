@@ -123,6 +123,7 @@ class Settings(BaseSettings):
 
     # --- Phase 2A: PostgreSQL Provider ---
     POSTGRES_SERVICE: str = "postgresql@17"
+    POSTGRES_MODE: str = "auto"  # "auto" | "host" | "docker"
     POSTGRES_HOST: str = "127.0.0.1"
     POSTGRES_PORT: int = 5432
     POSTGRES_DATABASE: str = "loops_db"
@@ -140,6 +141,7 @@ class Settings(BaseSettings):
 
     # --- Phase 2A: Redis Provider ---
     REDIS_SERVICE: str = "redis"
+    REDIS_MODE: str = "auto"  # "auto" | "host" | "docker"
     REDIS_HOST: str = "127.0.0.1"
     REDIS_PORT: int = 6379
     REDIS_CONTAINER_PATTERNS: str = "hexabeta_redis"

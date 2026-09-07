@@ -4,8 +4,11 @@ HexaAgent — Redis Provider (Phase 2A + Docker Awareness).
 Monitors the Redis service: process status, PING, version,
 memory usage. READ ONLY.
 
-Supports both host mode (macOS process detection) and Docker container mode
-(GCP VM container detection using network IP from docker inspect).
+Supports three detection modes (via REDIS_MODE):
+    - `host`: Host-process check only (finds `redis-server`, connects to REDIS_HOST:REDIS_PORT)
+    - `docker`: Docker container check only (skips host processes, sets pid=None, dynamically
+                discovers container IP from docker inspect, connects to container IP:6379)
+    - `auto`: Host-process check first; falls back to Docker if host process not found
 """
 
 from __future__ import annotations
@@ -52,79 +55,54 @@ class RedisProvider(BaseCollector):
         }
 
         try:
-            detection_mode = getattr(settings, "BACKEND_MODE", "auto").lower()
+            redis_mode = getattr(settings, "REDIS_MODE", "auto").lower()
             docker_enabled = getattr(settings, "DOCKER_ENABLED", True)
 
             target_host: Optional[str] = None
             target_port: int = settings.REDIS_PORT
             is_docker_mode: bool = False
 
-            # 1. Host Mode Check (unless explicitly set to docker mode)
-            if detection_mode != "docker":
-                proc = find_process_by_name("redis-server")
-                if proc:
-                    result["running"] = True
-                    result["pid"] = proc.pid
-                    metrics = get_process_metrics(proc.pid)
-                    result["cpu_percent"] = metrics["cpu_percent"]
-                    result["memory_bytes"] = metrics["memory_bytes"]
-                    result["memory_mb"] = metrics["memory_mb"]
+            # 1. Host Mode: process detection only
+            if redis_mode == "host":
+                await self._check_host_process(settings, result)
+                if result["running"]:
                     target_host = settings.REDIS_HOST
                     target_port = settings.REDIS_PORT
 
-            # 2. Docker Container Fallback (if host process not found or mode == docker)
-            if not result["running"] and docker_enabled and detection_mode != "host":
-                docker_status = await is_docker_available()
-                if docker_status.available:
-                    patterns = settings.redis_container_patterns
-                    containers, err = await list_containers(
-                        patterns,
-                        timeout=settings.DOCKER_COMMAND_TIMEOUT,
-                    )
-                    if containers:
-                        running_containers = [
-                            c for c in containers
-                            if c.get("State") == "running" or "Up" in c.get("Status", "")
-                        ]
-                        target_container = running_containers[0] if running_containers else containers[0]
+            # 2. Docker Mode: container detection only (skips host process search)
+            elif redis_mode == "docker":
+                if docker_enabled:
+                    target_host, target_port = await self._check_docker_container(settings, result)
+                    is_docker_mode = True
+                else:
+                    result["error"] = "Docker detection disabled in configuration (DOCKER_ENABLED=false)"
 
-                        result["running"] = True
-                        result["pid"] = None  # No host PID in Docker mode
+            # 3. Auto Mode: host process first, fallback to Docker
+            else:
+                await self._check_host_process(settings, result)
+                if result["running"]:
+                    target_host = settings.REDIS_HOST
+                    target_port = settings.REDIS_PORT
+                elif docker_enabled:
+                    target_host, target_port = await self._check_docker_container(settings, result)
+                    if result["running"]:
                         is_docker_mode = True
 
-                        cid = target_container.get("ID", "")
-                        if cid:
-                            # Fetch stats for CPU/memory
-                            stats, stats_err = await get_container_stats(
-                                cid,
-                                timeout=settings.DOCKER_COMMAND_TIMEOUT,
-                            )
-                            if stats:
-                                result["cpu_percent"] = stats.get("cpu_percent", 0.0)
-                                mem_bytes = stats.get("memory_bytes", 0)
-                                result["memory_bytes"] = mem_bytes
-                                result["memory_mb"] = round(mem_bytes / (1024 * 1024), 2)
-
-                            # Inspect container to dynamically extract IP address
-                            inspection, inspect_err = await inspect_container(
-                                cid,
-                                timeout=settings.DOCKER_COMMAND_TIMEOUT,
-                            )
-                            target_host = _get_container_ip(inspection)
-                            target_port = 6379  # Container internal port
-
-            # 3. Test Redis connectivity
+            # 4. Test Redis connectivity if a target host was determined
             if target_host is not None:
-                await _test_redis(settings, result, target_host=target_host, target_port=target_port, is_docker_mode=is_docker_mode)
-            elif is_docker_mode and target_host is None:
+                await _test_redis(
+                    settings,
+                    result,
+                    target_host=target_host,
+                    target_port=target_port,
+                    is_docker_mode=is_docker_mode,
+                )
+            elif result["running"] and target_host is None:
                 result["ping"] = False
                 result["healthy"] = False
-                result["error"] = "Redis container found but no IP address available on Docker network"
-            elif not result["running"] and not result["ping"]:
-                # Try default host connection if nothing detected yet
-                await _test_redis(settings, result, target_host=settings.REDIS_HOST, target_port=settings.REDIS_PORT, is_docker_mode=False)
-
-            if not result["running"] and not result["ping"]:
+                if not result.get("error"):
+                    result["error"] = "Redis container found but no IP address available on Docker network"
+            elif not result["running"]:
                 if not result.get("error"):
                     result["error"] = "Redis service or container not running"
 
@@ -133,6 +111,72 @@ class RedisProvider(BaseCollector):
             result["error"] = str(e)
 
         return result
+
+    async def _check_host_process(self, settings: Any, result: dict[str, Any]) -> None:
+        """Check host psutil process for redis-server."""
+        proc = find_process_by_name("redis-server")
+        if proc:
+            result["running"] = True
+            result["pid"] = proc.pid
+            metrics = get_process_metrics(proc.pid)
+            result["cpu_percent"] = metrics["cpu_percent"]
+            result["memory_bytes"] = metrics["memory_bytes"]
+            result["memory_mb"] = metrics["memory_mb"]
+
+    async def _check_docker_container(
+        self, settings: Any, result: dict[str, Any]
+    ) -> tuple[Optional[str], int]:
+        """
+        Check Docker containers for Redis matching REDIS_CONTAINER_PATTERNS.
+        Returns (container_ip, port).
+        """
+        docker_status = await is_docker_available()
+        if not docker_status.available:
+            if not result.get("error"):
+                result["error"] = f"Docker not available: {docker_status.error}"
+            return None, settings.REDIS_PORT
+
+        patterns = settings.redis_container_patterns
+        containers, err = await list_containers(
+            patterns,
+            timeout=settings.DOCKER_COMMAND_TIMEOUT,
+        )
+        if err:
+            result["error"] = err
+            return None, settings.REDIS_PORT
+
+        if containers:
+            running_containers = [
+                c for c in containers
+                if c.get("State") == "running" or "Up" in c.get("Status", "")
+            ]
+            target_container = running_containers[0] if running_containers else containers[0]
+
+            result["running"] = True
+            result["pid"] = None  # No host PID in Docker mode
+
+            cid = target_container.get("ID", "")
+            if cid:
+                # Fetch stats for CPU/memory
+                stats, stats_err = await get_container_stats(
+                    cid,
+                    timeout=settings.DOCKER_COMMAND_TIMEOUT,
+                )
+                if stats:
+                    result["cpu_percent"] = stats.get("cpu_percent", 0.0)
+                    mem_bytes = stats.get("memory_bytes", 0)
+                    result["memory_bytes"] = mem_bytes
+                    result["memory_mb"] = round(mem_bytes / (1024 * 1024), 2)
+
+                # Inspect container to dynamically extract IP address
+                inspection, inspect_err = await inspect_container(
+                    cid,
+                    timeout=settings.DOCKER_COMMAND_TIMEOUT,
+                )
+                container_ip = _get_container_ip(inspection)
+                return container_ip, 6379  # Redis internal container port
+
+        return None, settings.REDIS_PORT
 
 
 def _get_container_ip(inspection: Optional[dict[str, Any]]) -> Optional[str]:

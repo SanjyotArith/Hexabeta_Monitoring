@@ -4,8 +4,10 @@ HexaAgent — PostgreSQL Provider (Phase 2A + Docker Awareness).
 Monitors the PostgreSQL service: process status, connection test,
 version, current connections. READ ONLY.
 
-Supports both host mode (macOS Homebrew service / psutil process)
-and Docker container mode (GCP VM docker container detection).
+Supports three detection modes (via POSTGRES_MODE):
+    - `host`: Host-process check only (Homebrew service / psutil process)
+    - `docker`: Docker container check only (skips host processes, sets pid=None)
+    - `auto`: Host-process check first; falls back to Docker if host process not found
 """
 
 from __future__ import annotations
@@ -55,64 +57,32 @@ class PostgresProvider(BaseCollector):
         }
 
         try:
-            detection_mode = getattr(settings, "BACKEND_MODE", "auto").lower()
+            postgres_mode = getattr(settings, "POSTGRES_MODE", "auto").lower()
             docker_enabled = getattr(settings, "DOCKER_ENABLED", True)
 
-            # 1. Host Mode Check (unless explicitly set to docker mode)
-            if detection_mode != "docker":
-                svc = await check_brew_service(settings.POSTGRES_SERVICE)
-                if svc["running"]:
-                    result["running"] = True
-                    result["pid"] = svc.get("pid")
+            # 1. Host Mode: process detection only
+            if postgres_mode == "host":
+                await self._check_host_process(settings, result)
+
+            # 2. Docker Mode: container detection only (skips host process search)
+            elif postgres_mode == "docker":
+                if docker_enabled:
+                    await self._check_docker_container(settings, result)
                 else:
-                    proc = find_process_by_name("postgres")
-                    if proc:
-                        result["running"] = True
-                        result["pid"] = proc.pid
+                    result["error"] = "Docker detection disabled in configuration (DOCKER_ENABLED=false)"
 
-                if result["running"] and result["pid"]:
-                    metrics = get_process_metrics(result["pid"])
-                    result["cpu_percent"] = metrics["cpu_percent"]
-                    result["memory_bytes"] = metrics["memory_bytes"]
-                    result["memory_mb"] = metrics["memory_mb"]
-
-            # 2. Docker Container Fallback (if host process not found or mode == docker)
-            if not result["running"] and docker_enabled and detection_mode != "host":
-                docker_status = await is_docker_available()
-                if docker_status.available:
-                    patterns = settings.postgres_container_patterns
-                    containers, err = await list_containers(
-                        patterns,
-                        timeout=settings.DOCKER_COMMAND_TIMEOUT,
-                    )
-                    if containers:
-                        # Find running container or default to first match
-                        running_containers = [
-                            c for c in containers
-                            if c.get("State") == "running" or "Up" in c.get("Status", "")
-                        ]
-                        target_container = running_containers[0] if running_containers else containers[0]
-
-                        result["running"] = True
-                        result["pid"] = None  # No host PID in Docker mode
-
-                        cid = target_container.get("ID", "")
-                        if cid:
-                            stats, stats_err = await get_container_stats(
-                                cid,
-                                timeout=settings.DOCKER_COMMAND_TIMEOUT,
-                            )
-                            if stats:
-                                result["cpu_percent"] = stats.get("cpu_percent", 0.0)
-                                mem_bytes = stats.get("memory_bytes", 0)
-                                result["memory_bytes"] = mem_bytes
-                                result["memory_mb"] = round(mem_bytes / (1024 * 1024), 2)
+            # 3. Auto Mode: host process first, fallback to Docker
+            else:
+                await self._check_host_process(settings, result)
+                if not result["running"] and docker_enabled:
+                    await self._check_docker_container(settings, result)
 
             if not result["running"]:
-                result["error"] = "PostgreSQL service or container not running"
+                if not result.get("error"):
+                    result["error"] = "PostgreSQL service or container not running"
                 return result
 
-            # 3. Database Connection Test
+            # Database Connection Test (runs in all modes when postgres is running)
             await _test_connection(settings, result)
 
         except Exception as e:
@@ -120,6 +90,63 @@ class PostgresProvider(BaseCollector):
             result["error"] = str(e)
 
         return result
+
+    async def _check_host_process(self, settings: Any, result: dict[str, Any]) -> None:
+        """Check host Homebrew service or psutil process for postgres."""
+        svc = await check_brew_service(settings.POSTGRES_SERVICE)
+        if svc["running"]:
+            result["running"] = True
+            result["pid"] = svc.get("pid")
+        else:
+            proc = find_process_by_name("postgres")
+            if proc:
+                result["running"] = True
+                result["pid"] = proc.pid
+
+        if result["running"] and result["pid"]:
+            metrics = get_process_metrics(result["pid"])
+            result["cpu_percent"] = metrics["cpu_percent"]
+            result["memory_bytes"] = metrics["memory_bytes"]
+            result["memory_mb"] = metrics["memory_mb"]
+
+    async def _check_docker_container(self, settings: Any, result: dict[str, Any]) -> None:
+        """Check Docker containers for postgres matching POSTGRES_CONTAINER_PATTERNS."""
+        docker_status = await is_docker_available()
+        if not docker_status.available:
+            if not result.get("error"):
+                result["error"] = f"Docker not available: {docker_status.error}"
+            return
+
+        patterns = settings.postgres_container_patterns
+        containers, err = await list_containers(
+            patterns,
+            timeout=settings.DOCKER_COMMAND_TIMEOUT,
+        )
+        if err:
+            result["error"] = err
+            return
+
+        if containers:
+            running_containers = [
+                c for c in containers
+                if c.get("State") == "running" or "Up" in c.get("Status", "")
+            ]
+            target_container = running_containers[0] if running_containers else containers[0]
+
+            result["running"] = True
+            result["pid"] = None  # No host PID in Docker mode
+
+            cid = target_container.get("ID", "")
+            if cid:
+                stats, stats_err = await get_container_stats(
+                    cid,
+                    timeout=settings.DOCKER_COMMAND_TIMEOUT,
+                )
+                if stats:
+                    result["cpu_percent"] = stats.get("cpu_percent", 0.0)
+                    mem_bytes = stats.get("memory_bytes", 0)
+                    result["memory_bytes"] = mem_bytes
+                    result["memory_mb"] = round(mem_bytes / (1024 * 1024), 2)
 
 
 async def _test_connection(settings: Any, result: dict[str, Any]) -> None:

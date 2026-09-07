@@ -1,5 +1,5 @@
 """
-Unit tests for RedisProvider (Host mode, Docker mode, missing Docker, IP extraction, connection tests).
+Unit tests for RedisProvider (Host mode, Docker mode, Auto mode, REDIS_MODE configuration, IP extraction).
 """
 
 import asyncio
@@ -15,6 +15,7 @@ class TestRedisProvider(TestCase):
 
     def setUp(self):
         self.settings = get_settings()
+        self.settings.REDIS_MODE = "auto"
         self.provider = RedisProvider()
 
     def test_get_container_ip_extraction(self):
@@ -44,7 +45,8 @@ class TestRedisProvider(TestCase):
     @patch("app.providers.redis_provider.get_process_metrics")
     @patch("app.providers.redis_provider._test_redis")
     def test_redis_host_mode(self, mock_test_redis, mock_metrics, mock_find_proc):
-        """Test Redis host process detection (macOS mode)."""
+        """Test Redis host process detection (host mode)."""
+        self.settings.REDIS_MODE = "host"
         mock_proc = MagicMock()
         mock_proc.pid = 5678
         mock_find_proc.return_value = mock_proc
@@ -70,9 +72,9 @@ class TestRedisProvider(TestCase):
     @patch("app.providers.redis_provider.get_container_stats")
     @patch("app.providers.redis_provider.inspect_container")
     @patch("app.providers.redis_provider._test_redis")
-    def test_redis_docker_mode(self, mock_test_redis, mock_inspect, mock_stats, mock_list, mock_docker_avail, mock_find_proc):
-        """Test Redis Docker container detection & dynamic IP extraction."""
-        mock_find_proc.return_value = None
+    def test_redis_docker_mode_skips_host_detection(self, mock_test_redis, mock_inspect, mock_stats, mock_list, mock_docker_avail, mock_find_proc):
+        """Test REDIS_MODE=docker SKIPS host detection entirely and uses dynamic container IP:6379."""
+        self.settings.REDIS_MODE = "docker"
         mock_docker_avail.return_value = DockerStatus(available=True)
         mock_list.return_value = ([
             {
@@ -98,8 +100,11 @@ class TestRedisProvider(TestCase):
 
         res = asyncio.run(self.provider.collect())
 
+        # Verify host detection functions were NEVER called
+        mock_find_proc.assert_not_called()
+
         self.assertTrue(res["running"])
-        self.assertIsNone(res["pid"])  # pid should be None in Docker mode
+        self.assertIsNone(res["pid"])  # pid must be None in Docker mode
         self.assertEqual(res["cpu_percent"], 0.8)
         self.assertEqual(res["memory_bytes"], 30 * 1024 * 1024)
         mock_test_redis.assert_called_once_with(
@@ -108,11 +113,59 @@ class TestRedisProvider(TestCase):
 
     @patch("app.providers.redis_provider.find_process_by_name")
     @patch("app.providers.redis_provider.is_docker_available")
+    @patch("app.providers.redis_provider.list_containers")
+    @patch("app.providers.redis_provider.get_container_stats")
+    @patch("app.providers.redis_provider.inspect_container")
     @patch("app.providers.redis_provider._test_redis")
-    def test_redis_missing_docker_gracefully(self, mock_test_redis, mock_docker_avail, mock_find_proc):
-        """Test missing Docker handles gracefully when host process is missing."""
+    def test_redis_auto_mode_fallback_to_docker(self, mock_test_redis, mock_inspect, mock_stats, mock_list, mock_docker_avail, mock_find_proc):
+        """Test REDIS_MODE=auto falls back to Docker when host process is missing."""
+        self.settings.REDIS_MODE = "auto"
         mock_find_proc.return_value = None
+        mock_docker_avail.return_value = DockerStatus(available=True)
+        mock_list.return_value = ([
+            {
+                "ID": "redis_container_456",
+                "Name": "hexabeta_redis",
+                "State": "running",
+                "Status": "Up 5 hours",
+            }
+        ], None)
+        mock_stats.return_value = ({
+            "cpu_percent": 0.8,
+            "memory_bytes": 30 * 1024 * 1024,
+        }, None)
+        mock_inspect.return_value = ({
+            "NetworkSettings": {
+                "IPAddress": "172.18.0.7"
+            }
+        }, None)
+
+        res = asyncio.run(self.provider.collect())
+
+        self.assertTrue(res["running"])
+        self.assertIsNone(res["pid"])
+        mock_test_redis.assert_called_once_with(
+            self.settings, res, target_host="172.18.0.7", target_port=6379, is_docker_mode=True
+        )
+
+    @patch("app.providers.redis_provider.is_docker_available")
+    def test_redis_missing_docker_gracefully(self, mock_docker_avail):
+        """Test missing Docker handles gracefully in docker mode."""
+        self.settings.REDIS_MODE = "docker"
         mock_docker_avail.return_value = DockerStatus(available=False, error="Docker CLI not found")
+
+        res = asyncio.run(self.provider.collect())
+
+        self.assertFalse(res["healthy"])
+        self.assertIn("Docker not available", res["error"])
+
+    @patch("app.providers.redis_provider.is_docker_available")
+    @patch("app.providers.redis_provider.list_containers")
+    def test_redis_missing_container_gracefully(self, mock_list, mock_docker_avail):
+        """Test missing container handles gracefully in docker mode."""
+        self.settings.REDIS_MODE = "docker"
+        mock_docker_avail.return_value = DockerStatus(available=True)
+        mock_list.return_value = ([], None)
 
         res = asyncio.run(self.provider.collect())
 
@@ -131,7 +184,7 @@ class TestRedisProvider(TestCase):
         mock_redis_cls.return_value = mock_client
 
         res = {"healthy": False, "ping": False, "error": None, "running": False}
-        asyncio.run(_test_redis(self.settings, res, target_host="127.0.0.1", target_port=6379, is_docker_mode=False))
+        asyncio.run(_test_redis(self.settings, res, target_host="172.18.0.3", target_port=6379, is_docker_mode=True))
 
         self.assertTrue(res["ping"])
         self.assertTrue(res["healthy"])
