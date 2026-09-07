@@ -123,14 +123,34 @@ class Settings(BaseSettings):
 
     # --- Phase 2A: PostgreSQL Provider ---
     POSTGRES_SERVICE: str = "postgresql@17"
+    POSTGRES_HOST: str = "127.0.0.1"
     POSTGRES_PORT: int = 5432
     POSTGRES_DATABASE: str = "loops_db"
     POSTGRES_USER: str = "hexa_user"
     POSTGRES_PASSWORD: str = ""
+    POSTGRES_CONTAINER_PATTERNS: str = "hexabeta_postgres,hexabeta_postgres_main"
+
+    @property
+    def postgres_container_patterns(self) -> list[str]:
+        """Parse the comma-separated Postgres container patterns into a list."""
+        raw = self.POSTGRES_CONTAINER_PATTERNS.strip()
+        if not raw:
+            return []
+        return [p.strip() for p in raw.split(",") if p.strip()]
 
     # --- Phase 2A: Redis Provider ---
     REDIS_SERVICE: str = "redis"
+    REDIS_HOST: str = "127.0.0.1"
     REDIS_PORT: int = 6379
+    REDIS_CONTAINER_PATTERNS: str = "hexabeta_redis"
+
+    @property
+    def redis_container_patterns(self) -> list[str]:
+        """Parse the comma-separated Redis container patterns into a list."""
+        raw = self.REDIS_CONTAINER_PATTERNS.strip()
+        if not raw:
+            return []
+        return [p.strip() for p in raw.split(",") if p.strip()]
 
     # --- Phase 2A: Nginx Provider ---
     NGINX_LABEL: str = "com.hexabeta.nginx"
