@@ -74,37 +74,50 @@ class Settings(BaseSettings):
     ENABLE_OPERATIONS_POLLER: bool = False
     ENABLE_LOG_PUSHER: bool = False
 
+    def _build_url(self, endpoint: str) -> str:
+        """
+        Safely construct a full URL combining MONITOR_URL, API_PREFIX, and endpoint,
+        ensuring that API_PREFIX is added exactly once without duplication.
+        """
+        base = self.MONITOR_URL.rstrip("/")
+        prefix = self.API_PREFIX.strip("/")
+        ep = endpoint.strip("/")
+
+        if prefix:
+            # If base URL already ends with /prefix or prefix, strip it from base
+            if base.endswith(f"/{prefix}"):
+                base = base[:-len(f"/{prefix}")]
+            elif base.endswith(prefix):
+                base = base[:-len(prefix)].rstrip("/")
+
+            # If endpoint already starts with prefix/ or prefix, strip prefix from endpoint
+            if ep == prefix:
+                ep = ""
+            elif ep.startswith(f"{prefix}/"):
+                ep = ep[len(f"{prefix}/"):]
+
+        parts = [p for p in [base, prefix, ep] if p]
+        return "/".join(parts)
+
     @property
     def full_report_url(self) -> str:
         """Construct the full URL for the HexaMonitor report endpoint."""
-        base = self.MONITOR_URL.rstrip("/")
-        prefix = self.API_PREFIX.strip("/")
-        endpoint = self.REPORT_ENDPOINT.lstrip("/")
-        return f"{base}/{prefix}/{endpoint}"
+        return self._build_url(self.REPORT_ENDPOINT)
 
     @property
     def full_snapshot_push_url(self) -> str:
         """Construct the full URL for the HexaMonitor snapshot push endpoint."""
-        base = self.MONITOR_URL.rstrip("/")
-        prefix = self.API_PREFIX.strip("/")
-        endpoint = self.SNAPSHOT_PUSH_ENDPOINT.lstrip("/")
-        return f"{base}/{prefix}/{endpoint}"
+        return self._build_url(self.SNAPSHOT_PUSH_ENDPOINT)
 
     @property
     def full_logs_push_url(self) -> str:
         """Construct the full URL for the HexaMonitor logs push endpoint."""
-        base = self.MONITOR_URL.rstrip("/")
-        prefix = self.API_PREFIX.strip("/")
-        endpoint = self.LOGS_PUSH_ENDPOINT.lstrip("/")
-        return f"{base}/{prefix}/{endpoint}"
+        return self._build_url(self.LOGS_PUSH_ENDPOINT)
 
     @property
     def full_operations_poll_url(self) -> str:
         """Construct the full URL for the HexaMonitor operations poll endpoint."""
-        base = self.MONITOR_URL.rstrip("/")
-        prefix = self.API_PREFIX.strip("/")
-        endpoint = self.OPERATIONS_POLL_ENDPOINT.lstrip("/")
-        return f"{base}/{prefix}/{endpoint}"
+        return self._build_url(self.OPERATIONS_POLL_ENDPOINT)
 
     # --- Phase 2A: Backend Provider ---
     BACKEND_INTERNAL_HEALTH_URL: str = "http://localhost:8002/api/health"

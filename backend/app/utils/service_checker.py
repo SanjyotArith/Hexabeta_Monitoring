@@ -31,6 +31,10 @@ async def check_launchctl_service(label: str) -> dict[str, Any]:
     dict
         ``{"running": bool, "pid": int | None}``
     """
+    import sys
+    if sys.platform != "darwin":
+        return {"running": False, "pid": None}
+
     try:
         process = await asyncio.create_subprocess_exec(
             "launchctl", "list", label,
@@ -74,6 +78,10 @@ async def check_brew_service(service_name: str) -> dict[str, Any]:
     dict
         ``{"running": bool, "pid": int | None, "status": str}``
     """
+    import sys
+    if sys.platform != "darwin":
+        return {"running": False, "pid": None, "status": "unknown"}
+
     try:
         process = await asyncio.create_subprocess_exec(
             "brew", "services", "info", service_name, "--json",
@@ -153,8 +161,13 @@ def update_cloudflared_launchagent() -> None:
     and StandardErrorPath to a persistent log file, and ensures the log file exists.
     """
     import os
+    import sys
     import plistlib
     from pathlib import Path
+
+    if sys.platform != "darwin":
+        logger.info("Non-macOS platform detected (%s). Skipping Cloudflared LaunchAgent update.", sys.platform)
+        return
 
     target_log = "/Users/hexabeta/.cloudflared/cloudflared.log"
     try:
