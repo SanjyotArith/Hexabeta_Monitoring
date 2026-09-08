@@ -10,14 +10,35 @@ class User(Base):
     username = Column(String(50), nullable=False, unique=True, index=True)
     email = Column(String(255), nullable=False, unique=True, index=True)
     password_hash = Column(String(255), nullable=False)
-    full_name = Column(String(100), nullable=True)
     is_active = Column(Boolean, nullable=False, default=True)
-    role = Column(String(20), nullable=False, default="user")  # admin | user
-    approval_status = Column(String(20), nullable=False, default="approved")  # pending | approved | rejected
     created_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow)
     updated_at = Column(DateTime(timezone=True), nullable=False, default=datetime.utcnow, onupdate=datetime.utcnow)
     
     sessions = relationship("Session", back_populates="user", cascade="all, delete-orphan")
+
+    @property
+    def full_name(self):
+        return getattr(self, "_full_name", None)
+
+    @full_name.setter
+    def full_name(self, value):
+        self._full_name = value
+
+    @property
+    def role(self):
+        return getattr(self, "_role", "admin")
+
+    @role.setter
+    def role(self, value):
+        self._role = value
+
+    @property
+    def approval_status(self):
+        return getattr(self, "_approval_status", "approved")
+
+    @approval_status.setter
+    def approval_status(self, value):
+        self._approval_status = value
 
 
 
