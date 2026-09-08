@@ -1,1 +1,1 @@
-# API v1 Router package identifier
+# HexaMonitor & HexaAgent API v1 package

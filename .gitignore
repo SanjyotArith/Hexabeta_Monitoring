@@ -6,12 +6,15 @@ venv/
 env/
 ENV/
 
-# Python
+# Python & Databases
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+*.db
+*.sqlite
+*.sqlite3
 build/
 develop-eggs/
 dist/
@@ -40,15 +43,21 @@ yarn-error.log*
 frontend/dist/
 frontend/build/
 
-# macOS
+# Logs & Debug Output
+*.log
+backend/logs_payload_debug.json
+
+# macOS & OS
 .DS_Store
 .AppleDouble
 .LSOverride
 Icon
+Thumbs.db
+Desktop.ini
 
 # IDEs
 .idea/
 .vscode/
 *.swp
 *.swo
-backend/logs_payload_debug.json
+*~

@@ -1,26 +1,32 @@
 """
-Logs API — per-service table architecture.
+HexaMonitor & HexaAgent — Logs API Router (v1).
 
-POST  /logs/push       — receive batches from HexaAgent, parse, persist, broadcast
-WS    /logs/live       — WebSocket: streams newly stored logs to connected clients
-GET   /logs/history    — paginated query across one or all service tables
-GET   /logs/services   — list of services that have a log table
-GET   /logs/machines   — distinct machine names across all log tables
-GET   /logs/{service}  — legacy compat: returns latest 100 rows for a service
+Exposes:
+POST /api/v1/logs/push       — Receive log batches from HexaAgent, parse, persist, broadcast
+WS   /api/v1/logs/live       — WebSocket: streams newly stored logs to connected clients
+GET  /api/v1/logs/history    — Query across service log tables
+GET  /api/v1/logs/services   — List of services with log tables
+GET  /api/v1/logs/machines   — List of distinct machine names
+GET  /api/v1/logs/{service}  — Read, tail, or download service logs (local file or DB history)
 """
+
+from __future__ import annotations
 
 import re
 import json
 import asyncio
+import logging
 from datetime import datetime, timezone
+from typing import Any, Optional
 
-from fastapi import APIRouter, Request, Depends, WebSocket, WebSocketDisconnect, Query
+from fastapi import APIRouter, Request, Depends, WebSocket, WebSocketDisconnect, Query, HTTPException, status
+from fastapi.responses import FileResponse
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import text
+from sqlalchemy.future import select
 
 from app.core.database import get_db
 from app.models.infrastructure import Machine, Environment
-from sqlalchemy.future import select
 from app.services.log_table_service import (
     ensure_service_table,
     get_all_log_tables,
@@ -29,7 +35,9 @@ from app.services.log_table_service import (
     service_to_table,
 )
 
-router = APIRouter()
+logger = logging.getLogger("hexamonitor.api.v1.logs")
+
+router = APIRouter(prefix="/logs", tags=["Logs"])
 
 
 # ─── WebSocket Connection Manager ────────────────────────────────────────────
@@ -43,7 +51,6 @@ class ConnectionManager:
         self._connections.append(ws)
 
     def disconnect(self, ws: WebSocket):
-        self._connections.discard(ws) if hasattr(self._connections, 'discard') else None
         if ws in self._connections:
             self._connections.remove(ws)
 
@@ -117,12 +124,10 @@ async def push_logs(request: Request, db: AsyncSession = Depends(get_db)):
       "service": "nginx",
       "lines": ["...", "..."]
     }
-    Every line is parsed, written to the service-specific table, then broadcast.
     """
     try:
         data = await request.json()
 
-        # Debug dump (unchanged behaviour)
         try:
             with open("logs_payload_debug.json", "a") as f:
                 f.write(json.dumps(data) + "\n")
@@ -136,10 +141,8 @@ async def push_logs(request: Request, db: AsyncSession = Depends(get_db)):
         if not lines:
             return {"status": "success", "message": "No lines in batch"}
 
-        # Ensure the service-specific table exists
         table_name = await ensure_service_table(db, service_name)
 
-        # Resolve machine_id (create machine record if missing)
         machine_id = None
         machine_res = await db.execute(select(Machine).where(Machine.name == machine_name))
         machine = machine_res.scalars().first()
@@ -154,7 +157,6 @@ async def push_logs(request: Request, db: AsyncSession = Depends(get_db)):
         if machine:
             machine_id = machine.id
 
-        # Parse and prepare rows
         now = datetime.now(timezone.utc)
         rows = []
         broadcast_items = []
@@ -185,7 +187,6 @@ async def push_logs(request: Request, db: AsyncSession = Depends(get_db)):
         await insert_log_rows(db, table_name, rows)
         await db.commit()
 
-        # Broadcast to all connected WebSocket clients
         if broadcast_items:
             asyncio.create_task(manager.broadcast(json.dumps(broadcast_items)))
 
@@ -203,7 +204,7 @@ async def ws_live(websocket: WebSocket):
     await manager.connect(websocket)
     try:
         while True:
-            await websocket.receive_text()   # keep-alive ping from client
+            await websocket.receive_text()
     except WebSocketDisconnect:
         manager.disconnect(websocket)
     except Exception:
@@ -247,14 +248,9 @@ async def history(
 ):
     """
     Query log history across all (or a specific) service table(s).
-
-    Filters: machine_name, service_name, log_level, search (text), time range.
-    Sorting:  newest first.
-    Pagination: page / limit.
     """
     import datetime as dt
 
-    # ── Resolve time range ───────────────────────────────────────────────
     now = datetime.now(timezone.utc)
 
     presets = {
@@ -282,7 +278,6 @@ async def history(
         if end_time:
             ts_to = dateutil.parser.isoparse(end_time)
 
-    # ── Determine which tables to query ─────────────────────────────────
     if service_name and service_name != "All":
         target_table = service_to_table(service_name)
         all_tables = await get_all_log_tables(db)
@@ -293,7 +288,6 @@ async def history(
     if not tables:
         return {"status": "success", "total": 0, "page": page, "limit": limit, "logs": []}
 
-    # ── Build WHERE clauses ──────────────────────────────────────────────
     params: dict = {}
     where_parts = []
 
@@ -315,7 +309,6 @@ async def history(
 
     where_sql = ("WHERE " + " AND ".join(where_parts)) if where_parts else ""
 
-    # ── Build UNION ALL across tables ────────────────────────────────────
     sub_selects = []
     for tbl in tables:
         svc = table_to_service(tbl)
@@ -327,12 +320,10 @@ async def history(
 
     union_sql = " UNION ALL ".join(sub_selects)
 
-    # ── Count ────────────────────────────────────────────────────────────
     count_sql = f"SELECT COUNT(*) FROM ({union_sql}) AS combined"
     count_res = await db.execute(text(count_sql), params)
     total = count_res.scalar() or 0
 
-    # ── Paginated fetch ──────────────────────────────────────────────────
     offset = (page - 1) * limit
     data_sql = (
         f"SELECT id, machine_name, service_name, timestamp, log_level, message "
@@ -366,11 +357,41 @@ async def history(
 
 
 @router.get("/{service}")
-async def get_service_logs_legacy(service: str, db: AsyncSession = Depends(get_db)):
+async def get_service_logs(
+    service: str,
+    limit: int = Query(100, ge=1, le=2000),
+    search: Optional[str] = Query(None),
+    download: bool = Query(False),
+    db: AsyncSession = Depends(get_db),
+):
     """
-    Legacy compatibility: returns the latest 100 logs for `service`.
-    Used by Dashboard LogsSection (old polling).
+    Get or download logs for a specific service.
+    First checks if a local log file exists for HexaAgent; otherwise queries the HexaMonitor database table.
     """
+    try:
+        from app.core.logs import get_log_path, read_logs_tail
+        log_path = get_log_path(service)
+        if log_path and log_path.exists():
+            if download:
+                return FileResponse(
+                    path=log_path,
+                    media_type="text/plain",
+                    filename=f"hexabeta_{service}_{int(limit)}_logs.log",
+                )
+            lines = read_logs_tail(service, tail_lines=limit, search_query=search)
+            return {
+                "success": True,
+                "service": service,
+                "path": str(log_path),
+                "limit": limit,
+                "search_filter": search,
+                "line_count": len(lines),
+                "lines": lines,
+            }
+    except Exception:
+        pass
+
+    # Database query fallback for HexaMonitor server
     table_name = service_to_table(service)
     all_tables = await get_all_log_tables(db)
 
@@ -379,8 +400,8 @@ async def get_service_logs_legacy(service: str, db: AsyncSession = Depends(get_d
 
     result = await db.execute(text(
         f"SELECT log_level, message, timestamp FROM {table_name} "
-        f"ORDER BY timestamp DESC LIMIT 100"
-    ))
+        f"ORDER BY timestamp DESC LIMIT :limit"
+    ), {"limit": limit})
     rows = result.fetchall()
 
     logs  = [{"severity": r[0], "message": r[1], "timestamp": r[2].strftime("%H:%M:%S")} for r in rows]

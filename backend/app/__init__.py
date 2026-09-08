@@ -1,1 +1,1 @@
-# HexaMonitor app package
+# HexaMonitor & HexaAgent app package
