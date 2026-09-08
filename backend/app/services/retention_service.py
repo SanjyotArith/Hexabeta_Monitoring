@@ -38,7 +38,7 @@ async def run_data_retention_cleanup():
             result = await db.execute(text(
                 "SELECT table_name FROM information_schema.tables "
                 "WHERE table_schema = current_schema() "
-                "  AND table_name LIKE 'logs\\_%' ESCAPE '\\\\'"
+                "  AND table_name LIKE 'logs!_%' ESCAPE '!'"
             ))
             log_tables = [row[0] for row in result.fetchall()]
 

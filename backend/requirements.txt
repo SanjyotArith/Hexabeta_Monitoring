@@ -11,3 +11,5 @@ bcrypt==4.0.1
 apscheduler>=3.10.0
 httpx>=0.24.0
 python-multipart>=0.0.6
+greenlet>=3.0.0
+
