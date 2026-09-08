@@ -42,15 +42,26 @@ async def insert_metrics(db: AsyncSession, machine_id: int, payload: AgentReport
     )
     db.add(storage_metric)
     
-    gpu_metric = GPUMetric(
-        report_id=report.id,
-        model=payload.system_metrics.gpu.model,
-        vendor=payload.system_metrics.gpu.vendor,
-        core_count=payload.system_metrics.gpu.core_count,
-        metal_supported=payload.system_metrics.gpu.metal_supported,
-        metal_family=payload.system_metrics.gpu.metal_family,
-        utilization=payload.system_metrics.gpu.utilization
-    )
+    if payload.system_metrics.gpu:
+        gpu_metric = GPUMetric(
+            report_id=report.id,
+            model=payload.system_metrics.gpu.model,
+            vendor=payload.system_metrics.gpu.vendor,
+            core_count=payload.system_metrics.gpu.core_count,
+            metal_supported=payload.system_metrics.gpu.metal_supported,
+            metal_family=payload.system_metrics.gpu.metal_family,
+            utilization=payload.system_metrics.gpu.utilization
+        )
+    else:
+        gpu_metric = GPUMetric(
+            report_id=report.id,
+            model=None,
+            vendor=None,
+            core_count=None,
+            metal_supported=None,
+            metal_family=None,
+            utilization=None
+        )
     db.add(gpu_metric)
     
     await db.commit()

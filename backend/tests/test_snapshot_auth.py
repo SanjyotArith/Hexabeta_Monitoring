@@ -10,9 +10,10 @@ import pytest
 from unittest.mock import patch
 from httpx import AsyncClient, ASGITransport
 
-# Set a known test agent key BEFORE importing the app so config picks it up
+from app.core.config import settings
 TEST_AGENT_KEY = "test-agent-key-for-unit-tests"
 os.environ["AGENT_KEY"] = TEST_AGENT_KEY
+settings.AGENT_KEY = TEST_AGENT_KEY
 
 from app.main import app  # noqa: E402
 

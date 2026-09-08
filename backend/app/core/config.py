@@ -14,7 +14,8 @@ def load_env_file():
                         key, val = line.split("=", 1)
                         key = key.strip()
                         val = val.strip().strip("'\"")
-                        os.environ[key] = val
+                        if key not in os.environ:
+                            os.environ[key] = val
             break
 
 # Load environment configuration

@@ -24,18 +24,18 @@ class StorageReport(BaseModel):
     uploads_gb: float
 
 class GPUReport(BaseModel):
-    model: str
-    vendor: str
-    core_count: int
-    metal_supported: bool
-    metal_family: str
-    utilization: float
+    model: Optional[str] = None
+    vendor: Optional[str] = None
+    core_count: Optional[int] = None
+    metal_supported: Optional[bool] = None
+    metal_family: Optional[str] = None
+    utilization: Optional[float] = None
 
 class SystemMetrics(BaseModel):
     cpu: CPUReport
     memory: MemoryReport
     storage: StorageReport
-    gpu: GPUReport
+    gpu: Optional[GPUReport] = None
 
 class MachineInformation(BaseModel):
     name: str
