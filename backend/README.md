@@ -171,35 +171,59 @@ All settings are loaded from the `.env` file. See [.env.example](.env.example) f
 | `REFRESH_INTERVAL` | Suggested polling interval (seconds) | `5` |
 | `HOST` | Host to bind HexaAgent to | `0.0.0.0` |
 | `PORT` | Port to bind HexaAgent to | `9000` |
+| `DOCKER_ENABLED` | Enable/disable Docker CLI awareness | `true` |
+| `BACKEND_MODE` | Backend detection mode (`auto`, `host`, `docker`) | `auto` |
+| `POSTGRES_MODE` | PostgreSQL detection mode (`auto`, `host`, `docker`) | `auto` |
+| `REDIS_MODE` | Redis detection mode (`auto`, `host`, `docker`) | `auto` |
+| `HEXABETA_BACKEND_CONTAINER_PATTERNS` | Comma-separated container name patterns | `hexabeta_backend,hexabeta_backend_green` |
+| `POSTGRES_HOST` | PostgreSQL host address | `localhost` |
+| `REDIS_HOST` | Redis host address | `localhost` |
+| `ENABLE_OPERATIONS_POLLER` | Enable operations background poller | `false` |
+| `ENABLE_LOG_PUSHER` | Enable background log pusher | `false` |
 
 ---
 
-## Future Roadmap
+## Docker-Aware Deployment (GCP / Production)
 
-The architecture is designed to support the following collectors **without changing existing code** — just add a new collector class and register it.
+HexaAgent can monitor services running in Docker containers (e.g. on GCP Linux VMs) as well as macOS host processes.
 
-| Phase | Collector | Status |
-|---|---|---|
-| 1 | CPU | ✅ Implemented |
-| 1 | Memory | ✅ Implemented |
-| 1 | Storage | ✅ Implemented |
-| 1 | GPU | ✅ Implemented |
-| 2 | PostgreSQL | 🔲 Planned |
-| 2 | MongoDB | 🔲 Planned |
-| 2 | Redis | 🔲 Planned |
-| 3 | Nginx | 🔲 Planned |
-| 3 | Cloudflared | 🔲 Planned |
-| 3 | launchd Services | 🔲 Planned |
-| 4 | Health Checks | 🔲 Planned |
-| 4 | Logs | 🔲 Planned |
-| 4 | Alerts | 🔲 Planned |
-| 5 | Scheduler | 🔲 Planned |
-| 5 | Database Metrics | 🔲 Planned |
-| 5 | Historical Metrics | 🔲 Planned |
-| — | HexaMonitor Dashboard | 🔲 Separate Project |
+### Detection Modes
+- **`auto` (default)**: Tries host process detection first. If no host process is found and Docker is enabled, automatically falls back to Docker container detection.
+- **`docker`**: Skips host process detection and directly inspects Docker containers.
+- **`host`**: Uses native host process / service detection only.
+
+### Docker Requirements & Permissions
+When running HexaAgent in Docker-aware mode:
+1. The `docker` CLI must be installed on the host.
+2. The user running HexaAgent must be added to the `docker` group (e.g., `sudo usermod -aG docker $USER`).
+3. HexaAgent execution is **strictly read-only** (uses `docker ps`, `docker inspect`, `docker stats`, `docker info`). It never issues modification commands such as `stop`, `restart`, or `exec`.
+
+### Example GCP Linux VM `.env`
+```env
+HEXABETA_PROJECT_ROOT=/opt/hexabeta
+HEXABETA_BACKEND_PATH=/opt/hexabeta/backend
+HEXABETA_FRONTEND_PATH=/opt/hexabeta/frontend
+HEXABETA_UPLOADS_PATH=/opt/hexabeta/uploads
+
+BACKEND_MODE=docker
+POSTGRES_MODE=docker
+REDIS_MODE=docker
+DOCKER_ENABLED=true
+
+HEXABETA_BACKEND_CONTAINER_PATTERNS=hexabeta_backend,hexabeta_backend_green
+POSTGRES_CONTAINER_PATTERNS=postgres,hexabeta_postgres
+REDIS_CONTAINER_PATTERNS=redis,hexabeta_redis
+
+POSTGRES_HOST=localhost
+REDIS_HOST=localhost
+
+ENABLE_OPERATIONS_POLLER=false
+ENABLE_LOG_PUSHER=false
+```
 
 ---
 
 ## License
 
 Internal project — not for public distribution.
+
