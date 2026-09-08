@@ -40,101 +40,105 @@ logger = logging.getLogger("hexamonitor")
 
 @asynccontextmanager
 async def lifespan(app: FastAPI) -> AsyncIterator[None]:
-    # --- 1. Start HexaMonitor Server Scheduler ---
-    try:
-        from app.services.scheduler_service import start_scheduler, shutdown_scheduler
-        start_scheduler()
-        logger.info("HexaMonitor scheduler started.")
-    except Exception as e:
-        logger.warning("Could not start HexaMonitor scheduler: %s", e)
+    run_mode = settings.RUN_MODE.lower().strip()
+    logger.info("Application starting in RUN_MODE='%s'", run_mode)
 
-    # --- 2. Register HexaAgent Telemetry Collectors & Providers ---
-    try:
-        from app.core.registry import collector_registry
-        from app.collectors.cpu import CpuCollector
-        from app.collectors.gpu import GpuCollector
-        from app.collectors.memory import MemoryCollector
-        from app.collectors.storage import StorageCollector
-        from app.providers.availability import AvailabilityProvider
-        from app.providers.backend import BackendProvider
-        from app.providers.cloudflared import CloudflaredProvider
-        from app.providers.git_provider import GitProvider
-        from app.providers.nginx import NginxProvider
-        from app.providers.postgres import PostgresProvider
-        from app.providers.redis_provider import RedisProvider
-        from app.providers.system_provider import SystemProvider
-        from app.providers.api_provider import ApiProvider
-
-        # Phase 1 Collectors
-        collector_registry.register(CpuCollector())
-        collector_registry.register(MemoryCollector())
-        collector_registry.register(StorageCollector())
-        collector_registry.register(GpuCollector())
-
-        # Phase 2A Providers
-        collector_registry.register(BackendProvider())
-        collector_registry.register(PostgresProvider())
-        collector_registry.register(RedisProvider())
-        collector_registry.register(NginxProvider())
-        collector_registry.register(CloudflaredProvider())
-        collector_registry.register(GitProvider())
-        collector_registry.register(SystemProvider())
-        collector_registry.register(AvailabilityProvider())
-        collector_registry.register(ApiProvider())
-
-        logger.info("Registered collectors/providers: %s", ", ".join(collector_registry.registered))
-
-        # Platform service checks
+    # --- 1. MONITOR MODE SERVICES ---
+    if run_mode in ("monitor", "both"):
         try:
-            from app.utils.service_checker import update_cloudflared_launchagent
-            update_cloudflared_launchagent()
+            from app.services.scheduler_service import start_scheduler
+            start_scheduler()
+            logger.info("HexaMonitor scheduler started.")
         except Exception as e:
-            logger.error("Failed to execute update_cloudflared_launchagent: %s", e)
+            logger.warning("Could not start HexaMonitor scheduler: %s", e)
 
-        # Start HexaAgent Background Engines
-        snapshot_manager.start()
-        snapshot_pusher.start()
-        reporter.start()
-        queue_manager.start_worker()
-        history_engine.start()
+    # --- 2. AGENT MODE SERVICES ---
+    if run_mode in ("agent", "both"):
+        try:
+            from app.core.registry import collector_registry
+            from app.collectors.cpu import CpuCollector
+            from app.collectors.gpu import GpuCollector
+            from app.collectors.memory import MemoryCollector
+            from app.collectors.storage import StorageCollector
+            from app.providers.availability import AvailabilityProvider
+            from app.providers.backend import BackendProvider
+            from app.providers.cloudflared import CloudflaredProvider
+            from app.providers.git_provider import GitProvider
+            from app.providers.nginx import NginxProvider
+            from app.providers.postgres import PostgresProvider
+            from app.providers.redis_provider import RedisProvider
+            from app.providers.system_provider import SystemProvider
+            from app.providers.api_provider import ApiProvider
 
-        if settings.ENABLE_OPERATIONS_POLLER:
-            operations_poller.start()
-        else:
-            logger.info("Operations poller disabled by configuration (ENABLE_OPERATIONS_POLLER=false)")
+            # Register Phase 1 Collectors & Phase 2A/3 Providers
+            collector_registry.register(CpuCollector())
+            collector_registry.register(MemoryCollector())
+            collector_registry.register(StorageCollector())
+            collector_registry.register(GpuCollector())
+            collector_registry.register(BackendProvider())
+            collector_registry.register(PostgresProvider())
+            collector_registry.register(RedisProvider())
+            collector_registry.register(NginxProvider())
+            collector_registry.register(CloudflaredProvider())
+            collector_registry.register(GitProvider())
+            collector_registry.register(SystemProvider())
+            collector_registry.register(AvailabilityProvider())
+            collector_registry.register(ApiProvider())
 
-        if settings.ENABLE_LOG_PUSHER:
-            log_pusher.start()
-        else:
-            logger.info("Log pusher disabled by configuration (ENABLE_LOG_PUSHER=false)")
+            logger.info("Registered collectors/providers: %s", ", ".join(collector_registry.registered))
 
-    except Exception as e:
-        logger.warning("HexaAgent background engines initialization note: %s", e)
+            # Service checks
+            try:
+                from app.utils.service_checker import update_cloudflared_launchagent
+                update_cloudflared_launchagent()
+            except Exception as e:
+                logger.error("Failed to execute update_cloudflared_launchagent: %s", e)
+
+            # Start HexaAgent Background Engines
+            snapshot_manager.start()
+            snapshot_pusher.start()
+            reporter.start()
+            queue_manager.start_worker()
+            history_engine.start()
+
+            if settings.ENABLE_OPERATIONS_POLLER:
+                operations_poller.start()
+            else:
+                logger.info("Operations poller disabled by configuration (ENABLE_OPERATIONS_POLLER=false)")
+
+            if settings.ENABLE_LOG_PUSHER:
+                log_pusher.start()
+            else:
+                logger.info("Log pusher disabled by configuration (ENABLE_LOG_PUSHER=false)")
+
+        except Exception as e:
+            logger.warning("HexaAgent background engines initialization note: %s", e)
 
     yield  # Application running
 
-    # --- Shutdown Tasks ---
-    try:
-        from app.services.scheduler_service import shutdown_scheduler
-        shutdown_scheduler()
-    except Exception:
-        pass
+    # --- SHUTDOWN TASKS ---
+    if run_mode in ("monitor", "both"):
+        try:
+            from app.services.scheduler_service import shutdown_scheduler
+            shutdown_scheduler()
+        except Exception:
+            pass
 
-    try:
+    if run_mode in ("agent", "both"):
+        try:
+            await snapshot_manager.stop()
+            await snapshot_pusher.stop()
+            await reporter.stop()
+            await queue_manager.stop_worker()
+            await history_engine.stop()
 
-        await snapshot_manager.stop()
-        await snapshot_pusher.stop()
-        await reporter.stop()
-        await queue_manager.stop_worker()
-        await history_engine.stop()
+            if settings.ENABLE_OPERATIONS_POLLER:
+                await operations_poller.stop()
 
-        if settings.ENABLE_OPERATIONS_POLLER:
-            await operations_poller.stop()
-
-        if settings.ENABLE_LOG_PUSHER:
-            await log_pusher.stop()
-    except Exception:
-        pass
+            if settings.ENABLE_LOG_PUSHER:
+                await log_pusher.stop()
+        except Exception:
+            pass
 
 
 # ─── FastAPI Application Definition ──────────────────────────────────────────

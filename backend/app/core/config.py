@@ -54,6 +54,7 @@ class Settings(BaseSettings):
     API_V1_STR: str = "/api/v1"
 
     # Security Configurations
+    RUN_MODE: str = "agent"  # 'agent' | 'monitor' | 'both'
     SECRET_KEY: str = "9e81b67484dfd0f81d86d63e7cf0c79e6bc7c3e59ea16027a052ff37c862901e"
     AGENT_KEY: str = "default-agent-key"
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 15
